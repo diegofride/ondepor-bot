@@ -1,0 +1,18 @@
+{
+  "id": "/",
+  "name": "Reservame ésta!",
+  "short_name": "Reservame",
+  "description": "Reserva de canchas de pádel del club: el bot toma el turno apenas abre.",
+  "lang": "es-AR",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0e2038",
+  "theme_color": "#0e2038",
+  "icons": [
+    { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

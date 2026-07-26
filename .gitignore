@@ -1,0 +1,49 @@
+# ==========================================================================
+#  NUNCA subir: credenciales y datos personales
+#  (OJO: en .gitignore los comentarios van en su PROPIA línea; si se ponen
+#   al lado del patrón, la regla no funciona y el archivo se sube igual)
+# ==========================================================================
+
+# usuarios del panel + contraseñas
+usuarios.json
+# cuentas de OnDepor de cada reservador (usuario + clave)
+db_reservadores.json
+# nombres y player_id de personas reales
+db_jugadores.json
+# secret_key de la app
+webconfig.json
+# claves de notificaciones push
+vapid.json
+vapid_private.pem
+# suscripciones push (endpoints de cada dispositivo)
+push_subs.json
+
+# ==========================================================================
+#  Datos operativos (cambian solos, no tiene sentido versionarlos)
+# ==========================================================================
+reservas.json
+estados.json
+historial.json
+recurrentes.json
+roles.json
+logs/
+backups/
+*.tmp
+*.bak
+*.bak_*
+
+# ==========================================================================
+#  Basura de entorno
+# ==========================================================================
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pw_profile/
+_archivo_local/
+.DS_Store
+Thumbs.db
+.claude/
+
+# volcado de código para compartir (se regenera cuando hace falta)
+CODIGO_RESERVAME_ESTA.txt

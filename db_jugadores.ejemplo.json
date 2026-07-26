@@ -1,0 +1,9 @@
+{
+  "_ayuda": "Compañeros con su player_id de OnDepor (se consiguen desde la pestaña Jugadores).",
+  "jugadores": [
+    {
+      "nombre": "Nombre Apellido",
+      "player_id": 123456
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "usuarios": [
+    {
+      "usuario": "diego",
+      "clave": "CAMBIAME",
+      "nombre": "Diego",
+      "rol": "admin",
+      "admin": true
+    },
+    {
+      "usuario": "pablo",
+      "clave": "CAMBIAME",
+      "nombre": "Pablo",
+      "rol": "jugador"
+    }
+  ]
+}

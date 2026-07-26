@@ -1,0 +1,12 @@
+{
+  "_ayuda": "Los que se loguean en OnDepor y toman el turno (jugador 1). La clave es la de OnDepor de cada uno.",
+  "reservadores": [
+    {
+      "nombre": "Nombre Apellido",
+      "usuario": "mail@ejemplo.com",
+      "clave": "PONER_CLAVE",
+      "player_id": 123456,
+      "telefono": ""
+    }
+  ]
+}
