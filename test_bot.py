@@ -527,6 +527,22 @@ class TestRoles(BaseApp):
         self.assertNotIn("reservador_guardar", html)
         self.assertNotIn("?editar=", html)
 
+    def test_jugador_agrega_pero_no_borra(self):
+        """Agregar un jugador es inofensivo (lo puede hacer cualquiera); borrar no."""
+        def hay(pid):
+            return any(str(j.get("player_id")) == str(pid)
+                       for j in self.rb._cargar("db_jugadores.json", "jugadores"))
+
+        c = self.cliente("pablo", "clave2")          # rol 'jugador'
+        c.post("/jugadores/agregar", json={"id": 7777, "nombre": "Sumado Por Jugador"})
+        self.assertTrue(hay(7777), "el rol 'jugador' debería poder agregar")
+
+        c.post("/jugadores/borrar/7777", follow_redirects=True)
+        self.assertTrue(hay(7777), "el rol 'jugador' NO debería poder borrar")
+
+        self.cliente().post("/jugadores/borrar/7777", follow_redirects=True)   # admin sí
+        self.assertFalse(hay(7777))
+
     def test_nunca_se_queda_sin_administrador(self):
         us = [{"usuario": "a", "rol": "jugador"}, {"usuario": "b", "rol": "operador"}]
         self.assertFalse(any(self.web.rol_de(u) == "admin" for u in us))   # el guard del guardado lo arregla

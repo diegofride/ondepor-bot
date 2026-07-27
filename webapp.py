@@ -141,7 +141,8 @@ PERMISOS = {
     "usuarios":        "Administrar usuarios del panel",
     "todas_reservas":  "Ver y borrar reservas de todos (no solo las propias)",
     "cambiar_ondepor": "Cambiar jugadores de una reserva ya confirmada",
-    "gestionar_bases": "Agregar, editar y borrar jugadores y reservadores",
+    "agregar_jugadores": "Agregar jugadores nuevos a la base",
+    "gestionar_bases": "Editar y borrar jugadores y reservadores",
     "encuesta":        "Abrir y cerrar la encuesta semanal del grupo",
 }
 # Config de fábrica. Los permisos de cada rol se pueden EDITAR desde el panel de Usuarios
@@ -150,14 +151,14 @@ ROLES_BASE = {
     "admin":    {"etiqueta": "Administrador",
                  "ayuda": "Control total: usuarios, reservas de todos y cambios en OnDepor.",
                  "permisos": {"usuarios", "todas_reservas", "cambiar_ondepor",
-                              "gestionar_bases", "encuesta"}},
+                              "gestionar_bases", "encuesta", "agregar_jugadores"}},
     "operador": {"etiqueta": "Operador",
                  "ayuda": "Maneja reservas de todos, jugadores y reservadores. No toca usuarios.",
                  "permisos": {"todas_reservas", "cambiar_ondepor", "gestionar_bases",
-                              "encuesta"}},
+                              "encuesta", "agregar_jugadores"}},
     "jugador":  {"etiqueta": "Jugador",
-                 "ayuda": "Crea y maneja solo sus propias reservas.",
-                 "permisos": set()},
+                 "ayuda": "Crea y maneja sus propias reservas, y puede sumar jugadores nuevos.",
+                 "permisos": {"agregar_jugadores"}},
 }
 ROL_POR_DEFECTO = "jugador"
 ROLES = {}
@@ -2282,7 +2283,8 @@ def reserva_borrar(rid):
 @login_requerido
 def jugadores():
     guardados = cargar("db_jugadores.json", "jugadores")
-    es_admin = puede("gestionar_bases")
+    es_admin = puede("gestionar_bases")          # borrar (destructivo)
+    puede_sumar = puede("agregar_jugadores")     # buscar y agregar (inofensivo)
     filas = ""
     for j in sorted(guardados, key=lambda x: str(x.get("nombre", "")).lower()):
         borrar = ('<form method="post" action="' + url_for('jugador_borrar', pid=j['player_id'])
@@ -2293,16 +2295,20 @@ def jugadores():
     if not filas:
         filas = (f'<li class="vacio">{icon("users")}<div>Todavía no guardaste jugadores.<br>'
                  f'Buscalos arriba por apellido y agregalos con un toque.</div></li>')
-    cuerpo = f"""
+    buscador = f"""
     <div class="card">
       <h2>{icon('search')} Buscar y agregar jugador</h2>
+      <p><small class="hint">Se busca en OnDepor por apellido. Al agregarlo queda disponible
+         para las reservas y para la encuesta.</small></p>
       <div class="row">
         <div><input id="q" placeholder="Apellido…" onkeydown="if(event.key=='Enter')buscar()"></div>
         <div style="flex:0"><button onclick="buscar()">{icon('search')} Buscar</button></div>
       </div>
       <div id="estado" style="margin-top:8px"><small class="hint"></small></div>
       <ul class="lista compacta" id="result"></ul>
-    </div>
+    </div>"""
+
+    cuerpo = (buscador if puede_sumar else "") + f"""
     <div class="card">
       <h2>{icon('users')} Jugadores guardados <small class="hint" style="font-weight:400">({len(guardados)})</small></h2>
       <ul class="lista compacta">{filas}</ul>
@@ -2889,7 +2895,7 @@ def historial():
 
 
 @app.route("/api/buscar")
-@login_requerido
+@permiso_requerido("agregar_jugadores")
 def api_buscar():
     q = request.args.get("q", "").strip()
     if not q:
@@ -2908,7 +2914,7 @@ def api_buscar():
 
 
 @app.route("/jugadores/agregar", methods=["POST"])
-@permiso_requerido("gestionar_bases")
+@permiso_requerido("agregar_jugadores")
 def jugador_agregar():
     data = request.get_json(force=True, silent=True) or {}
     pid, nombre = data.get("id"), limpiar_nombre(data.get("nombre"))
