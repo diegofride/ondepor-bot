@@ -24,6 +24,7 @@ Archivos:
 import json
 import secrets
 import datetime
+import unicodedata
 
 from flask import (Blueprint, request, render_template_string, jsonify,
                    redirect, url_for, session, flash, make_response)
@@ -437,11 +438,53 @@ def club_de(hora):
     return CLUB_DIA if int(str(hora)[:2]) < 18 else CLUB_NOCHE
 
 
-def _reservadores():
-    """player_id -> nombre, solo los que tienen cuenta de OnDepor para disparar."""
-    return {str(r["player_id"]): r.get("nombre", "")
-            for r in rb._cargar("db_reservadores.json", "reservadores")
-            if r.get("player_id") and r.get("usuario")}
+def _norm_nombre(s):
+    """Nombre comparable: sin acentos, en minúscula y con los espacios normalizados."""
+    s = unicodedata.normalize("NFKD", str(s or "").strip().lower())
+    return " ".join(s.encode("ascii", "ignore").decode().split())
+
+
+def reservadores_con_carnet():
+    """{player_id: nombre} de los que pueden disparar una reserva, y los que no se
+    pudieron vincular.
+
+    OJO: en `db_reservadores.json` el `player_id` es OPCIONAL y casi ninguno lo tiene
+    (el resto de la app trabaja por nombre). Acá hace falta sí o sí, porque el carnet
+    del reservador entra en la reserva y hay que saber cuál es. Se resuelve contra
+    db_jugadores por nombre, aguantando acentos y apodos ("Rafa" por "Rafael"), pero
+    solo cuando no hay ninguna duda: con dos candidatos posibles se prefiere avisar
+    antes que meter el carnet equivocado en una reserva.
+    """
+    por_nombre, por_apellido = {}, {}
+    for j in rb._cargar("db_jugadores.json", "jugadores"):
+        if not j.get("player_id"):
+            continue
+        partes = _norm_nombre(j.get("nombre")).split()
+        if not partes:
+            continue
+        por_nombre[" ".join(partes)] = j["player_id"]
+        if len(partes) > 1:
+            por_apellido.setdefault(partes[-1], []).append((partes[0], j["player_id"]))
+
+    def _apodo(partes):
+        """Mismo apellido y un nombre que es abreviatura del otro, sin ambigüedad."""
+        if len(partes) < 2:
+            return None
+        cand = [pid for nom, pid in por_apellido.get(partes[-1], [])
+                if nom.startswith(partes[0]) or partes[0].startswith(nom)]
+        return cand[0] if len(cand) == 1 else None
+
+    listos, sin_vincular = {}, []
+    for r in rb._cargar("db_reservadores.json", "reservadores"):
+        if not r.get("usuario"):
+            continue                                   # sin cuenta no puede disparar
+        partes = _norm_nombre(r.get("nombre")).split()
+        pid = r.get("player_id") or por_nombre.get(" ".join(partes)) or _apodo(partes)
+        if pid:
+            listos[str(pid)] = r.get("nombre", "")
+        else:
+            sin_vincular.append(r.get("nombre", ""))
+    return listos, sin_vincular
 
 
 class _Agenda:
@@ -473,7 +516,7 @@ def armar_cronograma(e, elecciones=None):
     """
     r = resumen_votos(e)
     fechas = e.get("fechas", {})
-    reservadores = _reservadores()
+    reservadores, sin_vincular = reservadores_con_carnet()
 
     # ---- 1) qué turnos se juegan ----
     turnos = []
@@ -495,7 +538,7 @@ def armar_cronograma(e, elecciones=None):
     salida = []
     for t in turnos:
         salida.append(_armar_turno(t, r, reservadores, agenda))
-    return {"turnos": salida, "resumen": r}
+    return {"turnos": salida, "resumen": r, "sin_vincular": sin_vincular}
 
 
 def _armar_turno(t, r, reservadores, agenda):

@@ -902,5 +902,57 @@ class TestCronograma(BaseApp):
                          "un 'jugador' no debería poder programar el cronograma")
 
 
+class TestVincularReservadores(BaseApp):
+    """En db_reservadores.json el player_id es OPCIONAL y casi ninguno lo tiene: el
+    resto de la app trabaja por nombre. El armador SÍ lo necesita (el carnet del
+    reservador entra en la reserva). Esto se escapó en la primera versión y dejaba
+    el cronograma casi vacío, así que queda cubierto."""
+
+    def _bases(self, jugadores, reservadores):
+        for nombre, obj in (("db_jugadores.json", {"jugadores": jugadores}),
+                            ("db_reservadores.json", {"reservadores": reservadores})):
+            with open(os.path.join(self.tmp, nombre), "w", encoding="utf-8") as f:
+                json.dump(obj, f, ensure_ascii=False)
+
+    def test_resuelve_por_nombre_acentos_y_apodos(self):
+        import encuesta as enc
+        self._bases(
+            [{"nombre": "Ana Rossi", "player_id": 1},
+             {"nombre": "Darío Zelione", "player_id": 2},     # el reservador va sin tilde
+             {"nombre": "Rafa Juaya", "player_id": 3}],       # y este con apodo
+            [{"nombre": "Ana Rossi", "usuario": "a@x", "clave": "k"},
+             {"nombre": "Dario Zelione", "usuario": "d@x", "clave": "k"},
+             {"nombre": "Rafael Juaya", "usuario": "r@x", "clave": "k"}])
+        listos, sin_vincular = enc.reservadores_con_carnet()
+        self.assertEqual(sin_vincular, [])
+        self.assertEqual(set(listos), {"1", "2", "3"})
+        self.assertEqual(listos["3"], "Rafael Juaya", "guarda el nombre del RESERVADOR")
+
+    def test_no_adivina_cuando_hay_dos_candidatos(self):
+        """Meter el carnet equivocado en una reserva es peor que avisar."""
+        import encuesta as enc
+        self._bases(
+            [{"nombre": "Jonathan Enser", "player_id": 10},
+             {"nombre": "Jacobo Enser", "player_id": 11}],
+            [{"nombre": "Jony Enser", "usuario": "j@x", "clave": "k"}])
+        listos, sin_vincular = enc.reservadores_con_carnet()
+        self.assertEqual(listos, {})
+        self.assertEqual(sin_vincular, ["Jony Enser"])
+
+    def test_el_player_id_guardado_gana(self):
+        import encuesta as enc
+        self._bases([{"nombre": "Ana Rossi", "player_id": 99}],
+                    [{"nombre": "Ana Rossi", "usuario": "a@x", "clave": "k", "player_id": 7}])
+        listos, _ = enc.reservadores_con_carnet()
+        self.assertEqual(set(listos), {"7"})
+
+    def test_sin_cuenta_de_ondepor_no_cuenta(self):
+        import encuesta as enc
+        self._bases([{"nombre": "Ana Rossi", "player_id": 1}],
+                    [{"nombre": "Ana Rossi", "clave": "k"}])       # sin usuario
+        listos, sin_vincular = enc.reservadores_con_carnet()
+        self.assertEqual((listos, sin_vincular), ({}, []))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

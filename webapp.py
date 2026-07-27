@@ -2974,6 +2974,17 @@ def encuesta_cronograma():
             chips = '<small class="hint">Nadie se anotó este día.</small>'
         selector += f'<div style="margin-bottom:10px"><b>{enc.DIAS[d]}</b><br>{chips}</div>'
 
+    # si un reservador no se pudo vincular con su carnet, no se lo puede usar para
+    # disparar: conviene decirlo fuerte, porque se nota como "faltan canchas"
+    aviso_pid = ""
+    if plan["sin_vincular"]:
+        quienes = ", ".join(esc(n) for n in plan["sin_vincular"])
+        aviso_pid = (f'<div class="nota warn" style="margin-top:10px">{icon("alert")} '
+                     f'No pude vincular con su carnet a: <b>{quienes}</b>. No se los puede usar '
+                     f'para reservar hasta que se arregle: en <a href="{url_for("jugadores")}">'
+                     f'Jugadores</a> tienen que figurar con el <b>mismo nombre</b> que en '
+                     f'Reservadores.</div>')
+
     ocultos = "".join(
         f'<input type="hidden" name="h{t["dia"]}" value="{esc(t["hora"])}">'
         for t in plan["turnos"] if t["canchas"] and not t["tarde"])
@@ -2998,6 +3009,7 @@ def encuesta_cronograma():
         {selector}
         <noscript><button class="sec">Recalcular</button></noscript>
       </form>
+      {aviso_pid}
     </div>
     {"".join(_pinta_turno(t) for t in plan["turnos"])}
     <div class="card">
