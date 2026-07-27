@@ -639,6 +639,55 @@ class TestEncuesta(BaseApp):
         self.assertEqual(v["juega"], {})
         self.assertTrue(v["presta_carnet"])
 
+    def test_bolsa_de_carnets_junta_las_tres_fuentes(self):
+        """La bolsa = los que juegan + los que prestan en la encuesta + los prestados
+        por gente de AFUERA. Sin duplicar a quien está en más de una."""
+        import encuesta as enc
+        todos = enc.todos_los_jugadores()
+        if len(todos) < 4:
+            self.skipTest("hacen falta al menos 4 en la base")
+        a, b, c, afuera = todos[0]["id"], todos[1]["id"], todos[2]["id"], todos[3]["id"]
+        self._abrir([a, b, c])
+        e = enc.cargar_encuesta()
+
+        def votar(pid, juega, presta):
+            cl = self.web.app.test_client()
+            cl.get(f"/e/{e['token']}/soy/{pid}")
+            datos = {"carnet": "si" if presta else "no", "no6": "on"}
+            if juega:
+                datos["h5"] = ["10:00"]
+            else:
+                datos["no5"] = "on"
+            cl.post(f"/e/{e['token']}/votar", data=datos)
+
+        votar(a, True, True)      # juega y presta -> cuenta UNA vez
+        votar(b, False, True)     # presta sin jugar
+        votar(c, False, False)    # ni juega ni presta -> fuera de la bolsa
+
+        r = enc.resumen_votos(enc.cargar_encuesta())
+        self.assertEqual(len(r["bolsa"]), 2, "deberían ser solo a y b")
+        self.assertNotIn(c, r["bolsa"])
+
+        # sumo uno de afuera de la encuesta
+        self.cliente().post("/encuesta/carnets", data={"p": [afuera]}, follow_redirects=True)
+        r = enc.resumen_votos(enc.cargar_encuesta())
+        self.assertEqual(len(r["bolsa"]), 3)
+        self.assertIn(afuera, r["bolsa"])
+        # el desglose tiene que sumar exacto (sin superposición)
+        self.assertEqual(len(r["juegan"]) + len(r["solo_prestan"]) + len(r["extra"]),
+                         len(r["bolsa"]))
+
+    def test_carnets_de_afuera_no_ofrece_a_los_de_la_encuesta(self):
+        import re
+        import encuesta as enc
+        todos = enc.todos_los_jugadores()
+        dentro = [todos[0]["id"], todos[1]["id"]]
+        self._abrir(dentro)
+        html = self.cliente().get("/encuesta/carnets").get_data(as_text=True)
+        ofrecidos = re.findall(r"name='p' value='(\d+)'", html)
+        for pid in dentro:
+            self.assertNotIn(pid, ofrecidos, "no debería ofrecer a quien ya participa")
+
     def test_canchas_segun_la_regla_del_grupo(self):
         import encuesta as enc
         for n, esperado in ((3, 0), (4, 1), (7, 1), (8, 2), (11, 2), (12, 3), (20, 3)):

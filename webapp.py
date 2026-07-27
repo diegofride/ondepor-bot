@@ -2624,9 +2624,25 @@ def encuesta_panel():
     </div>
 
     <div class="card">
+      <h2>{icon('check-circle')} Bolsa de carnets
+        <small class="hint" style="font-weight:400">· con estos se reservan las canchas</small></h2>
+      <div class="row" style="gap:10px">
+        <div class="stat"><b>{len(r['bolsa'])}</b><small>carnets en total</small></div>
+        <div class="stat"><b>{len(r['juegan'])}</b><small>de los que juegan</small></div>
+        <div class="stat"><b>{len(r['solo_prestan'])}</b><small>prestan sin jugar</small></div>
+        <div class="stat ok"><b>{len(r['extra'])}</b><small>prestados de afuera</small></div>
+      </div>
+      <div style="margin-top:12px">
+        <a class="btn sec" href="{url_for('encuesta_carnets')}">{icon('plus')} Sumar carnets de afuera</a>
+      </div>
+      {f'<div style="margin-top:10px"><small class="hint">De afuera: {esc(", ".join(sorted(r["extra"].values())))}</small></div>' if r['extra'] else ''}
+      <div style="margin-top:10px"><small class="hint">Alcanza para
+        <b>{len(r['bolsa']) // 4}</b> cancha(s) en simultáneo (4 carnets cada una).</small></div>
+    </div>
+
+    <div class="card">
       <h2>{icon('chart')} Disponibilidad</h2>
-      <p><small class="hint">4 a 7 jugadores = 1 cancha · 8 a 11 = 2 · 12 o más = 3.
-        Prestan el carnet: <b>{len(r['carnets'])}</b>.</small></p>
+      <p><small class="hint">4 a 7 jugadores = 1 cancha · 8 a 11 = 2 · 12 o más = 3.</small></p>
       {tablas}
     </div>
     <script>
@@ -2647,9 +2663,12 @@ def _url_wa(e, link):
                  f"Se cierra el {e.get('cierre_txt','')}: {link}")
 
 
-def _pantalla_participantes(titulo, acción, preseleccion, texto_boton, aviso=""):
-    """Checkboxes con toda la gente de las bases, para elegir quiénes participan."""
-    todos = enc.todos_los_jugadores()
+def _pantalla_participantes(titulo, acción, preseleccion, texto_boton, aviso="",
+                            excluir=None, ayuda=None):
+    """Checkboxes con la gente de las bases. Sirve para elegir participantes de la
+    encuesta y también los carnets extra (ahí se excluye a los que ya participan)."""
+    fuera = {str(x) for x in (excluir or [])}
+    todos = [j for j in enc.todos_los_jugadores() if j["id"] not in fuera]
     sel = {str(x) for x in (preseleccion or [])}
     items = "".join(
         f"<label class='jugitem' data-n='{esc(j['nombre'].lower())}' "
@@ -2660,8 +2679,7 @@ def _pantalla_participantes(titulo, acción, preseleccion, texto_boton, aviso=""
     return f"""
     <div class="card">
       <h2>{icon('users')} {titulo}</h2>
-      <p><small class="hint">Solo los que marques van a poder votar. Los demás, aunque
-         tengan el link, no aparecen en la lista.</small></p>
+      <p><small class="hint">{ayuda or "Solo los que marques van a poder votar. Los demás, aunque tengan el link, no aparecen en la lista."}</small></p>
       {aviso}
       <form method="post" action="{acción}">
         <div class="row" style="align-items:center;gap:8px;margin-bottom:8px">
@@ -2734,6 +2752,30 @@ def encuesta_participantes():
     e["participantes"] = elegidos
     enc.guardar_encuesta(e)
     flash(f"Listo: {len(elegidos)} participantes.")
+    return redirect(url_for("encuesta_panel"))
+
+
+@app.route("/encuesta/carnets", methods=["GET", "POST"])
+@permiso_requerido("encuesta")
+def encuesta_carnets():
+    """Carnets prestados por gente que NO está en la encuesta (de afuera del grupo).
+    Se suman a la bolsa con la que se arman las reservas."""
+    e = enc.cargar_encuesta()
+    if not e:
+        return redirect(url_for("encuesta_panel"))
+    if request.method == "GET":
+        cuerpo = _pantalla_participantes(
+            "Carnets prestados de afuera",
+            url_for("encuesta_carnets"),
+            e.get("carnets_extra") or [],
+            "Guardar carnets",
+            excluir=e.get("participantes") or [],
+            ayuda=("Gente que no está en la encuesta pero que igual nos presta el carnet. "
+                   "Se suman a la bolsa para reservar (no se les pide que voten)."))
+        return pagina("Encuesta", "encuesta", cuerpo)
+    e["carnets_extra"] = request.form.getlist("p")
+    enc.guardar_encuesta(e)
+    flash(f"{len(e['carnets_extra'])} carnet(s) prestados de afuera.")
     return redirect(url_for("encuesta_panel"))
 
 

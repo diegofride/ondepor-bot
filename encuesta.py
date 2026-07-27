@@ -342,9 +342,21 @@ def resumen_votos(e):
             if gente:
                 por_hora[h] = gente
         por_dia[d] = por_hora
-    carnets = [v["nombre"] for v in votos.values() if v.get("presta_carnet")]
+    # ---- bolsa de carnets con la que se van a armar las reservas ----
+    # 1) los que prestan explícitamente en la encuesta
+    prestan = {pid: v["nombre"] for pid, v in votos.items() if v.get("presta_carnet")}
+    # 2) los que juegan: su carnet se usa en la cancha donde juegan
+    juegan = {pid: v["nombre"] for pid, v in votos.items() if v.get("juega")}
+    # 3) los prestados por gente de AFUERA de la encuesta (cargados a mano)
+    nombres = {j["id"]: j["nombre"] for j in todos_los_jugadores()}
+    extra = {str(p): nombres.get(str(p), str(p)) for p in (e.get("carnets_extra") or [])}
+    bolsa = {**prestan, **juegan, **extra}
+    # categorías que NO se superponen, para que el desglose sume exacto
+    solo_prestan = {p: n for p, n in prestan.items() if p not in juegan}
     return {"votaron": votaron, "faltan": faltan, "por_dia": por_dia,
-            "carnets": carnets, "total": len(jugadores)}
+            "carnets": sorted(prestan.values()), "total": len(jugadores),
+            "bolsa": bolsa, "prestan": prestan, "juegan": juegan, "extra": extra,
+            "solo_prestan": solo_prestan}
 
 
 def canchas_para(n):
