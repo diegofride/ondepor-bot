@@ -27,7 +27,7 @@ import unicodedata
 from functools import wraps
 
 from flask import (Flask, request, redirect, url_for, session,
-                   jsonify, render_template_string, flash)
+                   jsonify, render_template_string, flash, abort)
 from markupsafe import escape
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -82,6 +82,12 @@ def cargar_webconfig():
 WEBCFG = cargar_webconfig()
 PASSWORD = os.environ.get("PANEL_PASSWORD", WEBCFG.get("password", "cambiame"))
 
+# Dominio propio para la ENCUESTA (ej: "encuestareservas.duckdns.org"). Sirve para que
+# el link que se pega en WhatsApp no revele la app de reservas. Si está vacío, la
+# encuesta usa el mismo dominio que el panel.
+DOMINIO_ENCUESTA = (os.environ.get("DOMINIO_ENCUESTA")
+                    or WEBCFG.get("dominio_encuesta", "")).strip().lower()
+
 app = Flask(__name__)
 app.secret_key = WEBCFG.get("secret_key", secrets.token_hex(16))
 
@@ -90,6 +96,24 @@ app.secret_key = WEBCFG.get("secret_key", secrets.token_hex(16))
 # que la conexión es HTTPS para poder marcar la cookie como Secure).
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 app.register_blueprint(enc.bp)   # encuesta pública (sin login, sin rastro de la app)
+
+
+@app.before_request
+def _aislar_dominio_encuesta():
+    """En el dominio de la encuesta solo existe la encuesta: cualquier otra ruta da 404.
+    Así el que recibe el link no puede llegar al panel de reservas ni saber que existe."""
+    if not DOMINIO_ENCUESTA:
+        return None
+    host = (request.host or "").split(":")[0].lower()
+    if host != DOMINIO_ENCUESTA:
+        return None
+    if request.path.startswith("/e/"):
+        return None
+    if request.path == "/":                       # la raíz lleva a la encuesta abierta
+        e = enc.cargar_encuesta()
+        if e and e.get("token"):
+            return redirect(f"/e/{e['token']}")
+    abort(404)
 
 # Cookie de sesión endurecida. SECURE exige HTTPS -> en pruebas locales por HTTP se
 # desactiva con PANEL_COOKIE_INSEGURA=1 (para poder loguearse en localhost).
@@ -2542,7 +2566,6 @@ def encuesta_panel():
     """Panel de la encuesta semanal: abrirla, ver quién votó y cerrarla."""
     e = enc.cargar_encuesta()
     abierta = enc.esta_abierta(e)
-    base = request.url_root.rstrip("/")
 
     if not e:
         cuerpo = f"""
@@ -2556,7 +2579,7 @@ def encuesta_panel():
         return pagina("Encuesta", "encuesta", cuerpo)
 
     r = enc.resumen_votos(e)
-    link = f"{base}/e/{e['token']}"
+    link = url_encuesta(e["token"])
 
     # --- quién votó y quién falta ---
     def chip_dia(v):
@@ -2668,6 +2691,14 @@ def encuesta_panel():
     }}
     </script>"""
     return pagina("Encuesta", "encuesta", cuerpo)
+
+
+def url_encuesta(token):
+    """Link público de la encuesta. Usa su dominio propio si está configurado, para que
+    lo que se pega en WhatsApp no delate la app de reservas."""
+    if DOMINIO_ENCUESTA:
+        return f"https://{DOMINIO_ENCUESTA}/e/{token}"
+    return request.url_root.rstrip("/") + f"/e/{token}"
 
 
 def _url_wa(e, link):
