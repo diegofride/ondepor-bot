@@ -3311,6 +3311,10 @@ def reservador_guardar():
             nuevo["clave"] = clave
             nuevo["player_id"] = None
             lista.append(nuevo)
+        # el armador del cronograma necesita el carnet del reservador; si el nombre
+        # coincide sin ambigüedad con uno de Jugadores, se guarda solo
+        if not nuevo.get("player_id"):
+            nuevo["player_id"] = enc.vincular_carnet(nombre)
         guardar("db_reservadores.json", "reservadores", lista,
                 ayuda="Reservadores: los que reservan (usuario + clave = jugador 1).")
     flash(f"Guardado: {nombre}")

@@ -444,42 +444,48 @@ def _norm_nombre(s):
     return " ".join(s.encode("ascii", "ignore").decode().split())
 
 
+def vincular_carnet(nombre, jugadores=None):
+    """Busca el player_id que le corresponde a ese nombre en db_jugadores.
+
+    Aguanta acentos ("Dario" por "Darío") y apodos ("Rafa" por "Rafael"), pero solo
+    devuelve algo cuando NO hay ninguna duda: con dos candidatos con el mismo apellido
+    ("Jony Enser" con un Jonathan y un Jacobo) devuelve None, porque meter el carnet
+    equivocado en una reserva es peor que avisar.
+    """
+    partes = _norm_nombre(nombre).split()
+    if not partes:
+        return None
+    exacto, por_apellido = None, []
+    for j in (rb._cargar("db_jugadores.json", "jugadores") if jugadores is None else jugadores):
+        if not j.get("player_id"):
+            continue
+        otras = _norm_nombre(j.get("nombre")).split()
+        if not otras:
+            continue
+        if otras == partes:
+            exacto = j["player_id"]
+        elif len(partes) > 1 and len(otras) > 1 and otras[-1] == partes[-1] \
+                and (otras[0].startswith(partes[0]) or partes[0].startswith(otras[0])):
+            por_apellido.append(j["player_id"])
+    if exacto:
+        return exacto
+    return por_apellido[0] if len(por_apellido) == 1 else None
+
+
 def reservadores_con_carnet():
     """{player_id: nombre} de los que pueden disparar una reserva, y los que no se
     pudieron vincular.
 
     OJO: en `db_reservadores.json` el `player_id` es OPCIONAL y casi ninguno lo tiene
     (el resto de la app trabaja por nombre). Acá hace falta sí o sí, porque el carnet
-    del reservador entra en la reserva y hay que saber cuál es. Se resuelve contra
-    db_jugadores por nombre, aguantando acentos y apodos ("Rafa" por "Rafael"), pero
-    solo cuando no hay ninguna duda: con dos candidatos posibles se prefiere avisar
-    antes que meter el carnet equivocado en una reserva.
+    del reservador entra en la reserva y hay que saber cuál es.
     """
-    por_nombre, por_apellido = {}, {}
-    for j in rb._cargar("db_jugadores.json", "jugadores"):
-        if not j.get("player_id"):
-            continue
-        partes = _norm_nombre(j.get("nombre")).split()
-        if not partes:
-            continue
-        por_nombre[" ".join(partes)] = j["player_id"]
-        if len(partes) > 1:
-            por_apellido.setdefault(partes[-1], []).append((partes[0], j["player_id"]))
-
-    def _apodo(partes):
-        """Mismo apellido y un nombre que es abreviatura del otro, sin ambigüedad."""
-        if len(partes) < 2:
-            return None
-        cand = [pid for nom, pid in por_apellido.get(partes[-1], [])
-                if nom.startswith(partes[0]) or partes[0].startswith(nom)]
-        return cand[0] if len(cand) == 1 else None
-
+    jugadores = rb._cargar("db_jugadores.json", "jugadores")
     listos, sin_vincular = {}, []
     for r in rb._cargar("db_reservadores.json", "reservadores"):
         if not r.get("usuario"):
             continue                                   # sin cuenta no puede disparar
-        partes = _norm_nombre(r.get("nombre")).split()
-        pid = r.get("player_id") or por_nombre.get(" ".join(partes)) or _apodo(partes)
+        pid = r.get("player_id") or vincular_carnet(r.get("nombre"), jugadores)
         if pid:
             listos[str(pid)] = r.get("nombre", "")
         else:

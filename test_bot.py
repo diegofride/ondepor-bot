@@ -946,6 +946,16 @@ class TestVincularReservadores(BaseApp):
         listos, _ = enc.reservadores_con_carnet()
         self.assertEqual(set(listos), {"7"})
 
+    def test_al_guardar_un_reservador_se_vincula_solo(self):
+        """Para que no haya que arreglarlo a mano cada vez que se suma alguien."""
+        import encuesta as enc
+        self._bases([{"nombre": "Ana Rossi", "player_id": 55}], [])
+        self.cliente().post("/reservadores/guardar",
+                            data={"nombre": "Ana Rossi", "usuario": "a@x.com", "clave": "k"},
+                            follow_redirects=True)
+        guardado = self.web.cargar("db_reservadores.json", "reservadores")[0]
+        self.assertEqual(guardado["player_id"], 55)
+
     def test_sin_cuenta_de_ondepor_no_cuenta(self):
         import encuesta as enc
         self._bases([{"nombre": "Ana Rossi", "player_id": 1}],
