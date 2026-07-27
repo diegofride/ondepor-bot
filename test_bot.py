@@ -509,9 +509,12 @@ class TestRoles(BaseApp):
 
     def test_encuesta_solo_con_permiso(self):
         import encuesta as enc
-        self.cliente("pablo", "clave2").post("/encuesta/abrir", follow_redirects=True)
+        pid = enc.todos_los_jugadores()[0]["id"]
+        self.cliente("pablo", "clave2").post("/encuesta/abrir", data={"p": [pid]},
+                                             follow_redirects=True)
         self.assertFalse(enc.cargar_encuesta(), "un 'jugador' no debería poder abrirla")
-        self.cliente("oper", "clave3").post("/encuesta/abrir", follow_redirects=True)
+        self.cliente("oper", "clave3").post("/encuesta/abrir", data={"p": [pid]},
+                                            follow_redirects=True)
         self.assertTrue(enc.cargar_encuesta(), "un 'operador' sí debería poder")
 
     def test_probar_login_exige_permiso(self):
@@ -574,6 +577,72 @@ class TestRecurrentes(BaseApp):
             self.rb.escribir_json("reservas.json", {"reservas": []})
         self.web._generar_recurrentes()
         self.assertEqual(self.rb._cargar("reservas.json", "reservas"), [])
+
+
+# ----------------------------------------------------------------------
+#  11. Encuesta semanal
+# ----------------------------------------------------------------------
+class TestEncuesta(BaseApp):
+    def _abrir(self, participantes):
+        return self.cliente().post("/encuesta/abrir", data={"p": participantes},
+                                   follow_redirects=True)
+
+    def test_solo_votan_los_elegidos(self):
+        import encuesta as enc
+        todos = enc.todos_los_jugadores()
+        self.assertGreater(len(todos), 2, "hacen falta al menos 3 en la base")
+        invitados = [todos[0]["id"], todos[1]["id"]]
+        afuera = todos[2]["id"]
+        self._abrir(invitados)
+        e = enc.cargar_encuesta()
+        self.assertEqual(set(e["participantes"]), set(invitados))
+
+        c = self.web.app.test_client()
+        html = c.get(f"/e/{e['token']}").get_data(as_text=True)
+        self.assertIn(todos[0]["nombre"], html)
+        self.assertNotIn(f"/soy/{afuera}", html, "muestra a alguien que no participa")
+
+        # el no invitado no puede identificarse
+        c.get(f"/e/{e['token']}/soy/{afuera}", follow_redirects=True)
+        self.assertIn("¿Quién sos?", c.get(f"/e/{e['token']}").get_data(as_text=True))
+
+    def test_se_puede_sumar_gente_despues(self):
+        import encuesta as enc
+        todos = enc.todos_los_jugadores()
+        self._abrir([todos[0]["id"]])
+        nuevo = todos[1]["id"]
+        self.cliente().post("/encuesta/participantes",
+                            data={"p": [todos[0]["id"], nuevo]}, follow_redirects=True)
+        e = enc.cargar_encuesta()
+        self.assertIn(nuevo, e["participantes"])
+        c = self.web.app.test_client()
+        c.get(f"/e/{e['token']}/soy/{nuevo}", follow_redirects=True)
+        self.assertIn("Hola,", c.get(f"/e/{e['token']}").get_data(as_text=True))
+
+    def test_no_se_abre_sin_participantes(self):
+        import encuesta as enc
+        r = self.cliente().post("/encuesta/abrir", data={}, follow_redirects=True)
+        self.assertIn("al menos una persona", r.get_data(as_text=True))
+
+    def test_voto_separa_jugar_de_prestar_carnet(self):
+        import encuesta as enc
+        todos = enc.todos_los_jugadores()
+        pid = todos[0]["id"]
+        self._abrir([pid])
+        e = enc.cargar_encuesta()
+        c = self.web.app.test_client()
+        c.get(f"/e/{e['token']}/soy/{pid}", follow_redirects=True)
+        # no juega ningún día, pero SÍ presta el carnet
+        c.post(f"/e/{e['token']}/votar",
+               data={"no5": "on", "no6": "on", "carnet": "si"}, follow_redirects=True)
+        v = enc.votos_de(e["id"])[pid]
+        self.assertEqual(v["juega"], {})
+        self.assertTrue(v["presta_carnet"])
+
+    def test_canchas_segun_la_regla_del_grupo(self):
+        import encuesta as enc
+        for n, esperado in ((3, 0), (4, 1), (7, 1), (8, 2), (11, 2), (12, 3), (20, 3)):
+            self.assertEqual(enc.canchas_para(n), esperado, f"con {n} jugadores")
 
 
 if __name__ == "__main__":

@@ -2545,9 +2545,7 @@ def encuesta_panel():
           <p><small class="hint">Se manda un link al grupo de WhatsApp para que cada uno diga
             qué días y horarios puede jugar, y si presta su carnet. No necesitan instalar nada
             ni entrar acá.</small></p>
-          <form method="post" action="{url_for('encuesta_abrir')}">
-            <button>{icon('plus')} Abrir la encuesta de esta semana</button>
-          </form>
+          <a class="btn" href="{url_for('encuesta_nueva')}">{icon('plus')} Abrir la encuesta de esta semana</a>
         </div>"""
         return pagina("Encuesta", "encuesta", cuerpo)
 
@@ -2619,7 +2617,8 @@ def encuesta_panel():
     </div>
 
     <div class="card">
-      <h2>{icon('users')} Votaron {len(r['votaron'])} de {r['total']}</h2>
+      <h2>{icon('users')} Votaron {len(r['votaron'])} de {r['total']}
+        <small class="hint" style="font-weight:400">· <a href="{url_for('encuesta_participantes')}">cambiar quiénes participan</a></small></h2>
       <ul class="lista">{filas_ok or '<li class="vacio">Todavía no votó nadie.</li>'}</ul>
       {f'<h2 style="margin-top:16px">{icon("clock")} Faltan {len(r["faltan"])}</h2><ul class="lista compacta">{filas_falta}</ul>' if r['faltan'] else ''}
     </div>
@@ -2648,9 +2647,103 @@ def _url_wa(e, link):
                  f"Se cierra el {e.get('cierre_txt','')}: {link}")
 
 
+def _pantalla_participantes(titulo, acción, preseleccion, texto_boton, aviso=""):
+    """Checkboxes con toda la gente de las bases, para elegir quiénes participan."""
+    todos = enc.todos_los_jugadores()
+    sel = {str(x) for x in (preseleccion or [])}
+    items = "".join(
+        f"<label class='jugitem' data-n='{esc(j['nombre'].lower())}' "
+        f"style='display:flex;gap:9px;align-items:center'>"
+        f"<input type='checkbox' name='p' value='{esc(j['id'])}'"
+        f"{' checked' if j['id'] in sel else ''}> {esc(j['nombre'])}</label>"
+        for j in todos)
+    return f"""
+    <div class="card">
+      <h2>{icon('users')} {titulo}</h2>
+      <p><small class="hint">Solo los que marques van a poder votar. Los demás, aunque
+         tengan el link, no aparecen en la lista.</small></p>
+      {aviso}
+      <form method="post" action="{acción}">
+        <div class="row" style="align-items:center;gap:8px;margin-bottom:8px">
+          <div><input id="filtro" placeholder="🔍 buscar…" oninput="filtrar()"></div>
+          <div style="flex:0"><button type="button" class="sec" onclick="marcar(true)">Todos</button></div>
+          <div style="flex:0"><button type="button" class="sec" onclick="marcar(false)">Ninguno</button></div>
+        </div>
+        <div id="lista" style="display:flex;flex-direction:column;gap:7px;max-height:340px;
+             overflow:auto;border:1px solid var(--borde);border-radius:10px;padding:10px">{items}</div>
+        <div style="margin-top:8px"><small class="hint"><b id="cuenta">0</b> elegidos de {len(todos)}</small></div>
+        <div style="height:14px"></div>
+        <button>{icon('check')} {texto_boton}</button>
+        <a class="btn sec" href="{url_for('encuesta_panel')}">Cancelar</a>
+      </form>
+    </div>
+    <script>
+    function filtrar(){{
+      var q=(document.getElementById('filtro').value||'').toLowerCase();
+      document.querySelectorAll('#lista .jugitem').forEach(function(el){{
+        el.style.display = el.getAttribute('data-n').indexOf(q)>-1 ? 'flex':'none';
+      }});
+    }}
+    function marcar(v){{
+      document.querySelectorAll('#lista input:not([style*="none"])').forEach(function(c){{
+        if(c.closest('.jugitem').style.display!=='none') c.checked=v;
+      }});
+      contar();
+    }}
+    function contar(){{
+      document.getElementById('cuenta').textContent =
+        document.querySelectorAll('#lista input:checked').length;
+    }}
+    document.addEventListener('change', function(e){{ if(e.target.name==='p') contar(); }});
+    document.addEventListener('DOMContentLoaded', contar);
+    </script>"""
+
+
+@app.route("/encuesta/nueva")
+@permiso_requerido("encuesta")
+def encuesta_nueva():
+    """Elegir a quiénes se les manda la encuesta (arranca con los de la anterior)."""
+    anterior = enc.cargar_encuesta().get("participantes")
+    if not anterior:                       # la primera vez: todos preseleccionados
+        anterior = [j["id"] for j in enc.todos_los_jugadores()]
+    aviso = ('<div class="nota info">Vienen marcados los mismos de la encuesta anterior.</div>'
+             if enc.cargar_encuesta().get("participantes") else "")
+    cuerpo = _pantalla_participantes("¿A quiénes les mandás la encuesta?",
+                                     url_for("encuesta_abrir"), anterior,
+                                     "Abrir la encuesta", aviso)
+    return pagina("Encuesta", "encuesta", cuerpo)
+
+
+@app.route("/encuesta/participantes", methods=["GET", "POST"])
+@permiso_requerido("encuesta")
+def encuesta_participantes():
+    """Agregar o sacar gente de una encuesta que ya está abierta."""
+    e = enc.cargar_encuesta()
+    if not e:
+        return redirect(url_for("encuesta_panel"))
+    if request.method == "GET":
+        actuales = e.get("participantes") or [j["id"] for j in enc.todos_los_jugadores()]
+        cuerpo = _pantalla_participantes("Participantes de la encuesta",
+                                         url_for("encuesta_participantes"), actuales,
+                                         "Guardar cambios")
+        return pagina("Encuesta", "encuesta", cuerpo)
+    elegidos = request.form.getlist("p")
+    if not elegidos:
+        flash("Elegí al menos una persona.")
+        return redirect(url_for("encuesta_participantes"))
+    e["participantes"] = elegidos
+    enc.guardar_encuesta(e)
+    flash(f"Listo: {len(elegidos)} participantes.")
+    return redirect(url_for("encuesta_panel"))
+
+
 @app.route("/encuesta/abrir", methods=["POST"])
 @permiso_requerido("encuesta")
 def encuesta_abrir():
+    elegidos = request.form.getlist("p")
+    if not elegidos:
+        flash("Elegí al menos una persona para mandarle la encuesta.")
+        return redirect(url_for("encuesta_nueva"))
     hoy = hoy_ar()
     # cierra el jueves a la noche (23:59); si hoy ya es viernes o después, el jueves que viene
     jueves = enc._proximo(3, hoy)
@@ -2668,6 +2761,7 @@ def encuesta_abrir():
         "cierre_txt": f"jueves {jueves.strftime('%d/%m')} a la noche",
         "creada": ahora_ar().strftime("%Y-%m-%d %H:%M"),
         "creada_por": session.get("usuario", ""),
+        "participantes": elegidos,          # solo esta gente puede votar
     }
     enc.guardar_encuesta(nueva)
     flash("Encuesta abierta. Copiá el link y pegalo en el grupo.")

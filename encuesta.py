@@ -68,9 +68,9 @@ def guardar_voto(enc_id, pid, voto):
         rb.escribir_json("votos.json", data)
 
 
-def _jugadores():
-    """Todos los que pueden votar: los de la base de jugadores + los reservadores
-    (que también juegan). Ordenados alfabéticamente."""
+def todos_los_jugadores():
+    """Toda la gente de las bases (jugadores + reservadores), ordenada alfabéticamente.
+    Es el universo del que se ELIGEN los participantes de cada encuesta."""
     jug = rb._cargar("db_jugadores.json", "jugadores")
     res = rb._cargar("db_reservadores.json", "reservadores")
     por_id = {}
@@ -82,6 +82,18 @@ def _jugadores():
             por_id.setdefault(str(r["player_id"]),
                               {"id": str(r["player_id"]), "nombre": r.get("nombre", "")})
     return sorted(por_id.values(), key=lambda x: x["nombre"].lower())
+
+
+def _jugadores(e=None):
+    """Los que participan de ESTA encuesta (los que Diego eligió al abrirla).
+    Si la encuesta no tiene lista (formato viejo), participan todos."""
+    e = cargar_encuesta() if e is None else e
+    todos = todos_los_jugadores()
+    elegidos = (e or {}).get("participantes")
+    if not elegidos:
+        return todos
+    permitidos = {str(x) for x in elegidos}
+    return [j for j in todos if j["id"] in permitidos]
 
 
 def esta_abierta(e):
@@ -164,7 +176,7 @@ def ver(token):
                        '<h2 style="color:#fff">La encuesta ya cerró</h2>'
                        '<p style="opacity:.8">Las canchas se están reservando. ¡Nos vemos!</p></div>')
 
-    jugadores = _jugadores()
+    jugadores = _jugadores(e)
     pid = request.cookies.get(COOKIE_JUGADOR, "")
     yo = next((j for j in jugadores if j["id"] == pid), None)
 
@@ -264,7 +276,7 @@ def votar(token):
     if not e or e.get("token") != token or not esta_abierta(e):
         return redirect(url_for("encuesta.ver", token=token))
     pid = request.cookies.get(COOKIE_JUGADOR, "")
-    yo = next((j for j in _jugadores() if j["id"] == pid), None)
+    yo = next((j for j in _jugadores(e) if j["id"] == pid), None)
     if not yo:
         return redirect(url_for("encuesta.ver", token=token))
 
@@ -314,7 +326,7 @@ def _proximo(dia_semana, desde=None):
 
 def resumen_votos(e):
     """Arma el resumen: quién votó, quién falta y cuántos hay por día/hora."""
-    jugadores = _jugadores()
+    jugadores = _jugadores(e)
     votos = votos_de(e.get("id", ""))
     votaron, faltan = [], []
     for j in jugadores:
