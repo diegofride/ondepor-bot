@@ -34,6 +34,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from ondepor_core import (OnDepor, calcular_apertura, hora_real, sincronizar_reloj,
                           _epoch_ar, hoy_ar, ahora_ar)
 import reservar_bot as rb
+import encuesta as enc
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 CLUB_DEFAULT = 1102
@@ -88,6 +89,7 @@ app.secret_key = WEBCFG.get("secret_key", secrets.token_hex(16))
 # X-Forwarded-* (así el rate-limit ve la IP del cliente y no 127.0.0.1, y Flask sabe
 # que la conexión es HTTPS para poder marcar la cookie como Secure).
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
+app.register_blueprint(enc.bp)   # encuesta pública (sin login, sin rastro de la app)
 
 # Cookie de sesión endurecida. SECURE exige HTTPS -> en pruebas locales por HTTP se
 # desactiva con PANEL_COOKIE_INSEGURA=1 (para poder loguearse en localhost).
@@ -1005,6 +1007,7 @@ BASE = """<!doctype html><html lang="es"><head><meta charset="utf-8">
     <a href="{{url_for('reservas')}}" class="{{'activo' if tab=='reservas' else ''}}" {{'aria-current=page' if tab=='reservas'}}>Reservas</a>
     <a href="{{url_for('jugadores')}}" class="{{'activo' if tab=='jugadores' else ''}}" {{'aria-current=page' if tab=='jugadores'}}>Jugadores</a>
     <a href="{{url_for('reservadores')}}" class="{{'activo' if tab=='reservadores' else ''}}" {{'aria-current=page' if tab=='reservadores'}}>Reservadores</a>
+    <a href="{{url_for('encuesta_panel')}}" class="{{'activo' if tab=='encuesta' else ''}}" {{'aria-current=page' if tab=='encuesta'}}>Encuesta</a>
     <a href="{{url_for('recurrentes')}}" class="{{'activo' if tab=='recurrentes' else ''}}" {{'aria-current=page' if tab=='recurrentes'}}>Recurrentes</a>
     <a href="{{url_for('historial')}}" class="{{'activo' if tab=='historial' else ''}}" {{'aria-current=page' if tab=='historial'}}>Historial</a>
     {% if session.get('admin') %}<a href="{{url_for('usuarios')}}" class="{{'activo' if tab=='usuarios' else ''}}" {{'aria-current=page' if tab=='usuarios'}}>Usuarios</a>{% endif %}
@@ -2522,6 +2525,162 @@ def recurrente_borrar(rid):
         rb.escribir_json("recurrentes.json", {"recurrentes": lista})
     flash("Reserva recurrente borrada (las ya cargadas siguen igual).")
     return redirect(url_for("recurrentes"))
+
+
+@app.route("/encuesta")
+@login_requerido
+def encuesta_panel():
+    """Panel de la encuesta semanal: abrirla, ver quién votó y cerrarla."""
+    e = enc.cargar_encuesta()
+    abierta = enc.esta_abierta(e)
+    base = request.url_root.rstrip("/")
+
+    if not e:
+        cuerpo = f"""
+        <div class="card">
+          <h2>{icon('list')} Encuesta semanal</h2>
+          <p><small class="hint">Se manda un link al grupo de WhatsApp para que cada uno diga
+            qué días y horarios puede jugar, y si presta su carnet. No necesitan instalar nada
+            ni entrar acá.</small></p>
+          <form method="post" action="{url_for('encuesta_abrir')}">
+            <button>{icon('plus')} Abrir la encuesta de esta semana</button>
+          </form>
+        </div>"""
+        return pagina("Encuesta", "encuesta", cuerpo)
+
+    r = enc.resumen_votos(e)
+    link = f"{base}/e/{e['token']}"
+
+    # --- quién votó y quién falta ---
+    def chip_dia(v):
+        j = v.get("voto", {}).get("juega", {}) if v.get("voto") else {}
+        if not j:
+            return '<span class="pill vencida">no juega</span>'
+        partes = []
+        for d, hs in sorted(j.items()):
+            partes.append(f"{enc.DIAS[int(d)][:3]} {len(hs)}h")
+        return " ".join(f'<span class="pill reservada">{p}</span>' for p in partes)
+
+    filas_ok = "".join(
+        f'<li class="reserva"><div class="sp"><div class="titulo"><span>{esc(v["nombre"])}</span>'
+        f'{"<span class=pill programada>presta carnet</span>" if v.get("voto", {}).get("presta_carnet") else ""}</div>'
+        f'<div class="meta">{chip_dia(v)}</div></div></li>' for v in r["votaron"])
+    filas_falta = "".join(
+        f'<li><div class="sp">{esc(v["nombre"])}</div></li>' for v in r["faltan"])
+
+    # --- disponibilidad por día y hora ---
+    tablas = ""
+    for d, por_hora in r["por_dia"].items():
+        if not por_hora:
+            tablas += f'<div class="dia-res"><b>{enc.DIAS[d]}</b> <small class="hint">nadie todavía</small></div>'
+            continue
+        filas = ""
+        for h, gente in sorted(por_hora.items()):
+            n = len(gente)
+            canchas = enc.canchas_para(n)
+            color = "reservada" if canchas else "vencida"
+            filas += (f'<tr><td class="que">{h}</td><td><b>{n}</b></td>'
+                      f'<td><span class="pill {color}">{canchas} cancha(s)</span></td>'
+                      f'<td class="que"><small class="hint">{esc(", ".join(gente))}</small></td></tr>')
+        tablas += f"""<div style="margin-top:14px"><b>{enc.DIAS[d]}</b>
+          <div style="overflow-x:auto"><table class="permisos" style="min-width:340px">
+          <thead><tr><th>Hora</th><th>Anotados</th><th>Da para</th><th>Quiénes</th></tr></thead>
+          <tbody>{filas}</tbody></table></div></div>"""
+
+    estado_chip = ('<span class="pill reservada">Abierta</span>' if abierta
+                   else '<span class="pill vencida">Cerrada</span>')
+    acciones = ""
+    if abierta:
+        acciones = (f'<form method="post" action="{url_for("encuesta_cerrar")}" style="display:inline"'
+                    f' onsubmit="return confirm(\'¿Cerrar la encuesta? Nadie va a poder votar más.\')">'
+                    f'<button class="sec">Cerrar ahora</button></form>')
+    acciones += (f'<form method="post" action="{url_for("encuesta_abrir")}" style="display:inline"'
+                 f' onsubmit="return confirm(\'Esto arranca una encuesta nueva y archiva la actual. ¿Seguro?\')">'
+                 f'<button class="sec">Nueva encuesta</button></form>')
+
+    cuerpo = f"""
+    <div class="card">
+      <h2>{icon('list')} {esc(e.get('titulo'))} {estado_chip}</h2>
+      <p><small class="hint">Pegá este link en el grupo de WhatsApp. Cierra el {esc(e.get('cierre_txt'))}.</small></p>
+      <div class="row" style="align-items:center;gap:8px">
+        <div><input id="link" value="{link}" readonly onclick="this.select()"></div>
+        <div style="flex:0"><button type="button" onclick="copiar(this)">Copiar</button></div>
+      </div>
+      <div style="margin-top:10px">
+        <a class="btn dark" target="_blank" rel="noopener"
+           href="https://wa.me/?text={_url_wa(e, link)}">Compartir por WhatsApp</a>
+        <a class="btn sec" target="_blank" rel="noopener" href="{link}">Ver la encuesta</a>
+      </div>
+      <div style="height:12px"></div>
+      {acciones}
+    </div>
+
+    <div class="card">
+      <h2>{icon('users')} Votaron {len(r['votaron'])} de {r['total']}</h2>
+      <ul class="lista">{filas_ok or '<li class="vacio">Todavía no votó nadie.</li>'}</ul>
+      {f'<h2 style="margin-top:16px">{icon("clock")} Faltan {len(r["faltan"])}</h2><ul class="lista compacta">{filas_falta}</ul>' if r['faltan'] else ''}
+    </div>
+
+    <div class="card">
+      <h2>{icon('chart')} Disponibilidad</h2>
+      <p><small class="hint">4 a 7 jugadores = 1 cancha · 8 a 11 = 2 · 12 o más = 3.
+        Prestan el carnet: <b>{len(r['carnets'])}</b>.</small></p>
+      {tablas}
+    </div>
+    <script>
+    function copiar(b){{
+      var i=document.getElementById('link'); i.select(); i.setSelectionRange(0,99999);
+      navigator.clipboard.writeText(i.value).then(function(){{
+        var t=b.textContent; b.textContent='¡Copiado!';
+        setTimeout(function(){{b.textContent=t;}},1500);
+      }});
+    }}
+    </script>"""
+    return pagina("Encuesta", "encuesta", cuerpo)
+
+
+def _url_wa(e, link):
+    from urllib.parse import quote
+    return quote(f"🎾 ¿Jugás este finde? Decime qué horarios podés (y si prestás el carnet). "
+                 f"Se cierra el {e.get('cierre_txt','')}: {link}")
+
+
+@app.route("/encuesta/abrir", methods=["POST"])
+@login_requerido
+def encuesta_abrir():
+    hoy = hoy_ar()
+    # cierra el jueves a la noche (23:59); si hoy ya es viernes o después, el jueves que viene
+    jueves = enc._proximo(3, hoy)
+    cierre = datetime.datetime.combine(jueves, datetime.time(23, 59))
+    sab, dom = enc._proximo(5, hoy), enc._proximo(6, hoy)
+    nueva = {
+        "id": f"enc-{hoy.isoformat()}-{secrets.token_hex(2)}",
+        "token": secrets.token_urlsafe(9),
+        "titulo": f"Finde del {sab.strftime('%d/%m')} y {dom.strftime('%d/%m')}",
+        "dias": enc.DIAS_POR_DEFECTO,
+        "horas": enc.HORAS_TODAS,
+        "fechas": {"5": sab.isoformat(), "6": dom.isoformat()},
+        "estado": "abierta",
+        "cierra_epoch": _epoch_ar(cierre),
+        "cierre_txt": f"jueves {jueves.strftime('%d/%m')} a la noche",
+        "creada": ahora_ar().strftime("%Y-%m-%d %H:%M"),
+        "creada_por": session.get("usuario", ""),
+    }
+    enc.guardar_encuesta(nueva)
+    flash("Encuesta abierta. Copiá el link y pegalo en el grupo.")
+    return redirect(url_for("encuesta_panel"))
+
+
+@app.route("/encuesta/cerrar", methods=["POST"])
+@login_requerido
+def encuesta_cerrar():
+    e = enc.cargar_encuesta()
+    if e:
+        e["estado"] = "cerrada"
+        e["cerrada"] = ahora_ar().strftime("%Y-%m-%d %H:%M")
+        enc.guardar_encuesta(e)
+        flash("Encuesta cerrada.")
+    return redirect(url_for("encuesta_panel"))
 
 
 @app.route("/historial")
