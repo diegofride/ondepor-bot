@@ -126,6 +126,24 @@ armador pudiera decidir solo. Se cambian en `_armar_turno()`.
 
 ---
 
+## 6 bis. Trampa de datos: el `player_id` del reservador
+
+En `db_reservadores.json` el campo `player_id` es **opcional y casi nadie lo tiene**
+(11 de 12 en la base real): el resto de la app trabaja por nombre y nunca lo necesitó.
+El armador **sí lo necesita**, porque el carnet del reservador entra en la reserva y hay
+que saber cuál es. Se resuelve contra `db_jugadores` por nombre aguantando acentos
+(*Dario* ↔ *Darío*) y apodos (*Rafael* ↔ *Rafa*), pero **solo cuando no hay dos
+candidatos posibles**: con "Jony Enser" y dos "Enser" en la base, prefiere avisar antes
+que meter el carnet equivocado en una reserva. Los que no se vinculan salen listados en
+la pantalla.
+
+Otro criterio del mismo tipo: para un turno solo se cuentan como carnets disponibles los
+de **los anotados a ESA hora** más los prestados del día. El carnet de alguien que juega
+a otra hora del mismo día se deja quieto, porque usarlo lo dejaría afuera de su propio
+turno (los dos se reservan el día anterior, ver punto 3).
+
+---
+
 ## 7. Dónde está cada cosa en el código
 
 | Pieza | Dónde está |

@@ -2940,8 +2940,12 @@ def _pinta_turno(t):
         extras += (f'<div><small class="hint">Rotan: '
                    f'{esc(", ".join(x["nombre"] for x in t["rotan"]))}</small></div>')
     if t["sin_usar"]:
-        extras += (f'<div><small class="hint">Carnets que quedan libres para el próximo turno: '
-                   f'{esc(", ".join(x["nombre"] for x in t["sin_usar"]))}</small></div>')
+        # la lista entera puede ser larguísima (18 nombres): interesa el número
+        libres = [x["nombre"] for x in t["sin_usar"]]
+        detalle_libres = (": " + esc(", ".join(libres))) if len(libres) <= 6 else ""
+        extras += (f'<div><small class="hint">Quedan '
+                   f'<b>{_plural(len(libres), "carnet libre", "carnets libres")}</b> '
+                   f'para el próximo turno{detalle_libres}</small></div>')
     avisos = "".join(f'<div class="nota warn">{icon("alert")} {esc(a)}</div>' for a in t["avisos"])
     return f"""<div class="card">
       <h2>{enc.DIAS[t['dia']]} {esc(t['hora'][:2])} h · {_plural(t['canchas'], 'cancha', 'canchas')}</h2>
