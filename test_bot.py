@@ -488,6 +488,42 @@ class TestRoles(BaseApp):
             self.assertIn("No tenés permiso", r.get_data(as_text=True))
         self.assertNotIn("usuarios", self.web.ROLES["jugador"]["permisos"])
 
+    def test_editar_reservador_exige_permiso(self):
+        """Editar un reservador cambia su USUARIO Y CLAVE de OnDepor: no puede hacerlo
+        cualquiera que tenga una cuenta del panel."""
+        antes = self.rb._cargar("db_reservadores.json", "reservadores")[0]
+        self.cliente("pablo", "clave2").post("/reservadores/guardar", data={
+            "orig": antes.get("usuario", ""), "nombre": "Pisado",
+            "usuario": antes.get("usuario", ""), "clave": "OTRA"}, follow_redirects=True)
+        despues = self.rb._cargar("db_reservadores.json", "reservadores")[0]
+        self.assertEqual(despues.get("clave"), antes.get("clave"))
+        self.assertEqual(despues.get("nombre"), antes.get("nombre"))
+
+    def test_permiso_manda_sobre_el_rol(self):
+        """La tabla de permisos promete que el Operador puede cambiar jugadores en
+        OnDepor: la ruta tiene que respetar el PERMISO, no pedir rol admin."""
+        r = self.cliente("oper", "clave3").post(
+            "/reservas/cambiar-jugadores", data={"cambiar_id": "x", "jug": ["1", "2", "3"]},
+            follow_redirects=True)
+        self.assertNotIn("No tenés permiso", r.get_data(as_text=True))
+
+    def test_encuesta_solo_con_permiso(self):
+        import encuesta as enc
+        self.cliente("pablo", "clave2").post("/encuesta/abrir", follow_redirects=True)
+        self.assertFalse(enc.cargar_encuesta(), "un 'jugador' no debería poder abrirla")
+        self.cliente("oper", "clave3").post("/encuesta/abrir", follow_redirects=True)
+        self.assertTrue(enc.cargar_encuesta(), "un 'operador' sí debería poder")
+
+    def test_probar_login_exige_permiso(self):
+        """Usa las credenciales de OnDepor de un reservador."""
+        r = self.cliente("pablo", "clave2").get("/api/probar_login?i=0", follow_redirects=True)
+        self.assertIn("No tenés permiso", r.get_data(as_text=True))
+
+    def test_no_se_muestran_acciones_sin_permiso(self):
+        html = self.cliente("pablo", "clave2").get("/reservadores").get_data(as_text=True)
+        self.assertNotIn("reservador_guardar", html)
+        self.assertNotIn("?editar=", html)
+
     def test_nunca_se_queda_sin_administrador(self):
         us = [{"usuario": "a", "rol": "jugador"}, {"usuario": "b", "rol": "operador"}]
         self.assertFalse(any(self.web.rol_de(u) == "admin" for u in us))   # el guard del guardado lo arregla

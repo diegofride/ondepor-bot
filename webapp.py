@@ -141,17 +141,20 @@ PERMISOS = {
     "usuarios":        "Administrar usuarios del panel",
     "todas_reservas":  "Ver y borrar reservas de todos (no solo las propias)",
     "cambiar_ondepor": "Cambiar jugadores de una reserva ya confirmada",
-    "gestionar_bases": "Agregar y borrar jugadores y reservadores",
+    "gestionar_bases": "Agregar, editar y borrar jugadores y reservadores",
+    "encuesta":        "Abrir y cerrar la encuesta semanal del grupo",
 }
 # Config de fábrica. Los permisos de cada rol se pueden EDITAR desde el panel de Usuarios
 # y quedan guardados en roles.json; esto es lo que se usa si ese archivo no existe.
 ROLES_BASE = {
     "admin":    {"etiqueta": "Administrador",
                  "ayuda": "Control total: usuarios, reservas de todos y cambios en OnDepor.",
-                 "permisos": {"usuarios", "todas_reservas", "cambiar_ondepor", "gestionar_bases"}},
+                 "permisos": {"usuarios", "todas_reservas", "cambiar_ondepor",
+                              "gestionar_bases", "encuesta"}},
     "operador": {"etiqueta": "Operador",
                  "ayuda": "Maneja reservas de todos, jugadores y reservadores. No toca usuarios.",
-                 "permisos": {"todas_reservas", "cambiar_ondepor", "gestionar_bases"}},
+                 "permisos": {"todas_reservas", "cambiar_ondepor", "gestionar_bases",
+                              "encuesta"}},
     "jugador":  {"etiqueta": "Jugador",
                  "ayuda": "Crea y maneja solo sus propias reservas.",
                  "permisos": set()},
@@ -2134,7 +2137,7 @@ def _validar_cambio_form(form, arg_retorno):
 
 
 @app.route("/reservas/cambiar-jugadores", methods=["POST"])
-@admin_requerido
+@permiso_requerido("cambiar_ondepor")
 def reserva_cambiar_jugadores():
     rsv, nuevos, nuevo_nombre, err = _validar_cambio_form(request.form, "cambiar")
     if err:
@@ -2154,7 +2157,7 @@ def reserva_cambiar_jugadores():
 
 
 @app.route("/reservas/programar-cambio", methods=["POST"])
-@admin_requerido
+@permiso_requerido("cambiar_ondepor")
 def reserva_programar_cambio():
     rsv, nuevos, nuevo_nombre, err = _validar_cambio_form(request.form, "programar")
     if err:
@@ -2184,7 +2187,7 @@ def reserva_programar_cambio():
 
 
 @app.route("/reservas/cambio-prog-borrar/<rid>", methods=["POST"])
-@admin_requerido
+@permiso_requerido("cambiar_ondepor")
 def cambio_prog_borrar(rid):
     with rb._io_lock:
         lista = cargar("reservas.json", "reservas")
@@ -2646,7 +2649,7 @@ def _url_wa(e, link):
 
 
 @app.route("/encuesta/abrir", methods=["POST"])
-@login_requerido
+@permiso_requerido("encuesta")
 def encuesta_abrir():
     hoy = hoy_ar()
     # cierra el jueves a la noche (23:59); si hoy ya es viernes o después, el jueves que viene
@@ -2672,7 +2675,7 @@ def encuesta_abrir():
 
 
 @app.route("/encuesta/cerrar", methods=["POST"])
-@login_requerido
+@permiso_requerido("encuesta")
 def encuesta_cerrar():
     e = enc.cargar_encuesta()
     if e:
@@ -2769,7 +2772,7 @@ def api_buscar():
 
 
 @app.route("/jugadores/agregar", methods=["POST"])
-@login_requerido
+@permiso_requerido("gestionar_bases")
 def jugador_agregar():
     data = request.get_json(force=True, silent=True) or {}
     pid, nombre = data.get("id"), limpiar_nombre(data.get("nombre"))
@@ -2822,10 +2825,12 @@ def reservadores():
         borrar = ('<form method="post" action="' + url_for("reservador_borrar", idx=i)
                   + '" onsubmit="return confirm(\'¿Borrar este reservador?\')">'
                   + f'<button class="danger btn-ico" aria-label="Borrar reservador" title="Borrar reservador">{icon("trash")}</button></form>') if es_admin else ""
-        editar = (f'<a class="btn sec btn-ico" aria-label="Editar" title="Editar" href="'
+        editar = ((f'<a class="btn sec btn-ico" aria-label="Editar" title="Editar" href="'
                   + url_for("reservadores") + '?editar=' + str(i) + f'">{icon("edit")}</a>')
+                  if es_admin else "")
+        probar = (f'<button class="sec" onclick="probar({i},this)">Probar</button>') if es_admin else ""
         filas += (f'<li><div class="sp">{esc(r.get("nombre"))} {chip}<br><small class="hint">{esc(r.get("usuario"))}</small></div>'
-                  f'<div class="acc">{editar}<button class="sec" onclick="probar({i},this)">Probar</button>{borrar}</div></li>')
+                  f'<div class="acc">{editar}{probar}{borrar}</div></li>')
     if not filas:
         filas = (f'<li class="vacio">{icon("user")}<div>Todavía no cargaste reservadores.<br>'
                  f'El reservador es el que se loguea en OnDepor y toma el turno.</div></li>')
@@ -2838,7 +2843,7 @@ def reservadores():
     ph_clave = "(dejá vacío para no cambiarla)" if ed else "contraseña de OnDepor"
     cancelarR = ('<a class="btn sec" style="text-decoration:none" href="' + url_for("reservadores") + '">Cancelar</a>') if ed else ""
 
-    cuerpo = f"""
+    form_alta = f"""
     <div class="card">
       <h2>{icon('edit') if ed else icon('plus')} {tituloR}</h2>
       <form method="post" action="{url_for('reservador_guardar')}">
@@ -2852,7 +2857,9 @@ def reservadores():
         <div style="height:14px"></div>
         <button>{icon('save')} {'Guardar cambios' if ed else 'Guardar'}</button> {cancelarR}
       </form>
-    </div>
+    </div>"""
+
+    cuerpo = (form_alta if es_admin else "") + f"""
     <div class="card">
       <h2>{icon('user')} Reservadores guardados <small class="hint" style="font-weight:400">({len(lista)})</small></h2>
       <ul class="lista compacta">{filas}</ul>
@@ -2871,7 +2878,7 @@ def reservadores():
 
 
 @app.route("/reservadores/guardar", methods=["POST"])
-@login_requerido
+@permiso_requerido("gestionar_bases")
 def reservador_guardar():
     f = request.form
     nombre = limpiar_nombre(f.get("nombre", ""))
@@ -2921,7 +2928,7 @@ def reservador_borrar(idx):
 
 
 @app.route("/api/probar_login")
-@login_requerido
+@permiso_requerido("gestionar_bases")
 def api_probar_login():
     if not rate_ok("ondepor:" + (request.remote_addr or "?"), maximo=20, ventana_seg=60):
         return jsonify({"msg": "Demasiadas pruebas seguidas; esperá unos segundos."})
