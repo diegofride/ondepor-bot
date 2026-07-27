@@ -635,6 +635,28 @@ class TestEncuesta(BaseApp):
         c.get(f"/e/{e['token']}/soy/{nuevo}", follow_redirects=True)
         self.assertIn("Hola,", c.get(f"/e/{e['token']}").get_data(as_text=True))
 
+    def test_borrar_la_encuesta(self):
+        """Borrarla se lleva los votos y mata el link. Solo con permiso."""
+        import encuesta as enc
+        todos = enc.todos_los_jugadores()
+        pid = todos[0]["id"]
+        self._abrir([pid])
+        e = enc.cargar_encuesta()
+        c = self.web.app.test_client()
+        c.get(f"/e/{e['token']}/soy/{pid}", follow_redirects=True)
+        c.post(f"/e/{e['token']}/votar", data={"h5": ["10:00"], "no6": "on", "carnet": "si"})
+        self.assertEqual(len(enc.votos_de(e["id"])), 1)
+
+        # sin permiso no se borra
+        self.cliente("pablo", "clave2").post("/encuesta/borrar", follow_redirects=True)
+        self.assertTrue(enc.cargar_encuesta(), "un 'jugador' no debería poder borrarla")
+
+        self.cliente().post("/encuesta/borrar", follow_redirects=True)
+        self.assertFalse(enc.cargar_encuesta())
+        self.assertEqual(enc.votos_de(e["id"]), {}, "tenía que llevarse los votos")
+        html = self.web.app.test_client().get(f"/e/{e['token']}").get_data(as_text=True)
+        self.assertIn("Link no válido", html, "el link viejo debería morir")
+
     def test_no_se_abre_sin_participantes(self):
         import encuesta as enc
         r = self.cliente().post("/encuesta/abrir", data={}, follow_redirects=True)

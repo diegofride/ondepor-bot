@@ -2596,14 +2596,21 @@ def encuesta_panel():
 
     estado_chip = ('<span class="pill reservada">Abierta</span>' if abierta
                    else '<span class="pill vencida">Cerrada</span>')
+    n_votos = len(r["votaron"])
+    conf_borrar = ("¿Borrar la encuesta"
+                   + (f" y sus {n_votos} voto(s)" if n_votos else "")
+                   + "? El link deja de funcionar y no se puede deshacer.")
     acciones = ""
     if abierta:
         acciones = (f'<form method="post" action="{url_for("encuesta_cerrar")}" style="display:inline"'
                     f' onsubmit="return confirm(\'¿Cerrar la encuesta? Nadie va a poder votar más.\')">'
                     f'<button class="sec">Cerrar ahora</button></form>')
-    acciones += (f'<form method="post" action="{url_for("encuesta_abrir")}" style="display:inline"'
-                 f' onsubmit="return confirm(\'Esto arranca una encuesta nueva y archiva la actual. ¿Seguro?\')">'
-                 f'<button class="sec">Nueva encuesta</button></form>')
+    acciones += (f'<a class="btn sec" href="{url_for("encuesta_participantes")}">'
+                 f'{icon("users")} Participantes</a>'
+                 f'<a class="btn sec" href="{url_for("encuesta_nueva")}">Nueva encuesta</a>'
+                 f'<form method="post" action="{url_for("encuesta_borrar")}" style="display:inline"'
+                 f' onsubmit="return confirm(\'{conf_borrar}\')">'
+                 f'<button class="danger">{icon("trash")} Borrar encuesta</button></form>')
 
     cuerpo = f"""
     <div class="card">
@@ -2825,6 +2832,22 @@ def encuesta_cerrar():
         e["cerrada"] = ahora_ar().strftime("%Y-%m-%d %H:%M")
         enc.guardar_encuesta(e)
         flash("Encuesta cerrada.")
+    return redirect(url_for("encuesta_panel"))
+
+
+@app.route("/encuesta/borrar", methods=["POST"])
+@permiso_requerido("encuesta")
+def encuesta_borrar():
+    """Borra la encuesta y sus votos. El link deja de funcionar al instante."""
+    e = enc.cargar_encuesta()
+    if not e:
+        return redirect(url_for("encuesta_panel"))
+    with rb._io_lock:
+        votos = rb.leer_json("votos.json", {"votos": {}})
+        cuantos = len(votos.get("votos", {}).pop(e.get("id", ""), {}))
+        rb.escribir_json("votos.json", votos)
+        rb.escribir_json("encuesta_config.json", {})
+    flash(f"Encuesta borrada (se perdieron {cuantos} voto(s)). El link ya no funciona.")
     return redirect(url_for("encuesta_panel"))
 
 
