@@ -36,7 +36,20 @@ bp = Blueprint("encuesta", __name__)
 
 DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 DIAS_POR_DEFECTO = [5, 6]                       # sábado y domingo
-HORAS_TODAS = [f"{h:02d}:00" for h in range(8, 24)]   # 8 a 23 (día + noche)
+# Solo los horarios en los que realmente juegan: pedir 16 franjas hacía que la
+# encuesta se sintiera pesada y la gente no la contestara.
+HORAS_POR_DEFECTO = ["09:00", "10:00", "11:00", "15:00", "16:00", "17:00"]
+HORAS_TODAS = [f"{h:02d}:00" for h in range(8, 24)]   # el universo, por si se agrega alguna
+
+# Cada día se responde con UNA sola decisión (jugar y prestar el carnet no son dos
+# preguntas: si jugás, tu carnet se usa igual; prestarlo solo se decide si NO venís).
+MODO_JUEGO = "juego"
+MODO_PRESTA = "presta"      # no viene, pero deja el carnet
+MODO_NO = "no"              # no cuenta para nada ese día
+
+LEYENDA_CARNET = ("Prestar el carnet no te compromete a nada. Se usa solo para pisar la "
+                  "cancha y se cambia por quien juega realmente antes del turno. No te "
+                  "genera sanciones ni te impide reservar después.")
 COOKIE_JUGADOR = "jug"
 COOKIE_DIAS = 180
 
@@ -132,6 +145,16 @@ h2{margin:0 0 4px;font-size:1.05rem;color:#0e2038}
 .nojuego{margin-top:10px}
 .nojuego label{display:flex;align-items:center;gap:9px;font-size:.93rem;color:#6b7480;cursor:pointer}
 .nojuego input{width:19px;height:19px;accent-color:#98a2b3}
+.dia-card h2{margin-bottom:10px;font-size:1.15rem}
+.op{display:flex;gap:11px;align-items:flex-start;padding:13px;border:1.5px solid #d7dde6;
+  border-radius:12px;margin-bottom:9px;cursor:pointer;transition:.12s}
+.op input{margin-top:2px;width:20px;height:20px;accent-color:#12b76a;flex:0 0 auto}
+.op b{display:block;font-size:.98rem}
+.op small{color:#6b7480;font-size:.82rem;display:block;margin-top:3px;line-height:1.35}
+.op.sel{border-color:#12b76a;background:#f0fdf6}
+.horarios{display:none;padding:2px 4px 12px 40px}
+.franja{margin-bottom:10px}
+.fr-tit{display:block;font-size:.8rem;color:#6b7480;margin-bottom:5px;font-weight:600}
 .carnet label{display:flex;gap:11px;align-items:flex-start;padding:13px;border:1.5px solid #d7dde6;
   border-radius:12px;margin-bottom:9px;cursor:pointer;transition:.12s}
 .carnet input{margin-top:2px;width:19px;height:19px;accent-color:#12b76a;flex:0 0 auto}
@@ -196,58 +219,64 @@ def ver(token):
     voto = votos_de(e["id"]).get(pid, {})
     juega = voto.get("juega", {})
 
-    # ---- grilla de días y horarios ----
-    bloques = ""
-    for d in e.get("dias", DIAS_POR_DEFECTO):
-        elegidas = juega.get(str(d), [])
-        chips = "".join(
-            f'<label class="chip"><input type="checkbox" name="h{d}" value="{h}"'
-            f'{" checked" if h in elegidas else ""}><span>{h[:2]}</span></label>'
-            for h in e.get("horas", HORAS_TODAS))
-        sin = " checked" if (str(d) in juega and not elegidas) or (voto and str(d) not in juega) else ""
-        bloques += f"""
-        <div class="dia">📅 {DIAS[d]}</div>
-        <div class="chips">{chips}</div>
-        <div class="nojuego"><label>
-          <input type="checkbox" name="no{d}"{sin} onchange="destildar({d}, this)"> Este día no juego
-        </label></div>"""
+    # ---- una sola decisión por día ----
+    def bloque(d):
+        v = (voto.get("dias") or {}).get(str(d), {})
+        modo = v.get("modo", "")
+        horas_sel = v.get("horas", [])
+        manana = [h for h in e.get("horas", HORAS_POR_DEFECTO) if int(h[:2]) < 13]
+        tarde = [h for h in e.get("horas", HORAS_POR_DEFECTO) if int(h[:2]) >= 13]
 
-    presta = voto.get("presta_carnet")
+        def chips(lista, titulo):
+            if not lista:
+                return ""
+            cs = "".join(
+                f'<label class="chip"><input type="checkbox" name="h{d}" value="{h}"'
+                f'{" checked" if h in horas_sel else ""}><span>{int(h[:2])}</span></label>'
+                for h in lista)
+            return f'<div class="franja"><span class="fr-tit">{titulo}</span><div class="chips">{cs}</div></div>'
+
+        return f"""
+        <div class="card dia-card">
+          <h2>{DIAS[d]}</h2>
+          <label class="op"><input type="radio" name="m{d}" value="{MODO_JUEGO}"
+             {"checked" if modo == MODO_JUEGO else ""} onchange="pintar({d})">
+            <span><b>Juego</b></span></label>
+          <div class="horarios" id="hs{d}">
+            <p class="sub" style="margin:2px 0 8px">¿A qué hora podés? Marcá todas las que te sirvan.</p>
+            {chips(manana, "Mañana")}{chips(tarde, "Tarde")}
+          </div>
+          <label class="op"><input type="radio" name="m{d}" value="{MODO_PRESTA}"
+             {"checked" if modo == MODO_PRESTA else ""} onchange="pintar({d})">
+            <span><b>No juego, pero pueden usar mi carnet</b>
+            <small>{LEYENDA_CARNET}</small></span></label>
+          <label class="op"><input type="radio" name="m{d}" value="{MODO_NO}"
+             {"checked" if modo == MODO_NO else ""} onchange="pintar({d})">
+            <span><b>Este día no cuenten conmigo</b></span></label>
+        </div>"""
+
+    dias_html = "".join(bloque(d) for d in e.get("dias", DIAS_POR_DEFECTO))
     cuerpo = f"""
     <div class="hola"><span>Hola, <b>{escape(yo["nombre"])}</b>
       {"· ya votaste, podés cambiarlo" if voto else ""}</span>
       <a href="{url_for("encuesta.no_soy", token=token)}">no soy yo</a></div>
     <form method="post" action="{url_for("encuesta.votar", token=token)}">
-      <div class="card">
-        <h2>¿Qué horarios podés?</h2>
-        <p class="sub">Marcá todos los que te sirvan. Cuantos más marques, más fácil es
-           armar las canchas.</p>
-        {bloques}
-      </div>
-      <div class="card carnet">
-        <h2>Tu carnet</h2>
-        <p class="sub">Con los carnets se reservan las canchas. Prestarlo ayuda aunque no vengas.</p>
-        <label><input type="radio" name="carnet" value="si"{" checked" if presta is True else ""}>
-          <span><b>Pueden usar mi carnet</b>
-          <small>Aunque no juegue. Así se pueden reservar más canchas.</small></span></label>
-        <label><input type="radio" name="carnet" value="no"{" checked" if presta is False else ""}>
-          <span><b>No usen mi carnet</b>
-          <small>Solo se usa si juego.</small></span></label>
-      </div>
+      {dias_html}
       <button>{"Actualizar mi respuesta" if voto else "Listo, enviar"}</button>
     </form>
     <script>
-    function destildar(d, cb){{
-      if(!cb.checked) return;
-      document.querySelectorAll('input[name=h'+d+']').forEach(function(x){{ x.checked=false; }});
-    }}
-    document.querySelectorAll('.chip input').forEach(function(c){{
-      c.addEventListener('change', function(){{
-        if(!c.checked) return;
-        var d = c.name.slice(1);
-        var no = document.querySelector('input[name=no'+d+']');
-        if(no) no.checked = false;      // si elige un horario, ya no es "no juego"
+    function pintar(d){{
+      var r = document.querySelector('input[name=m'+d+']:checked');
+      var hs = document.getElementById('hs'+d);
+      var juega = r && r.value === '{MODO_JUEGO}';
+      hs.style.display = juega ? 'block' : 'none';
+      if(!juega) hs.querySelectorAll('input').forEach(function(x){{ x.checked = false; }});
+      document.querySelectorAll('.op').forEach(function(l){{
+        l.classList.toggle('sel', !!l.querySelector('input:checked'));
       }});
+    }}
+    document.addEventListener('DOMContentLoaded', function(){{
+      {" ".join("pintar(%d);" % d for d in e.get("dias", DIAS_POR_DEFECTO))}
     }});
     </script>"""
     return _pagina(e.get("titulo", ""), cuerpo, e.get("cierre_txt", ""))
@@ -280,33 +309,45 @@ def votar(token):
     if not yo:
         return redirect(url_for("encuesta.ver", token=token))
 
-    juega = {}
+    dias = {}
     for d in e.get("dias", DIAS_POR_DEFECTO):
-        if request.form.get(f"no{d}"):
-            continue                                  # ese día no juega
-        horas = [h for h in request.form.getlist(f"h{d}") if h in e.get("horas", HORAS_TODAS)]
-        if horas:
-            juega[str(d)] = sorted(horas)
+        modo = request.form.get(f"m{d}", "")
+        if modo not in (MODO_JUEGO, MODO_PRESTA, MODO_NO):
+            continue                                   # no contestó ese día
+        entrada = {"modo": modo}
+        if modo == MODO_JUEGO:
+            horas = [h for h in request.form.getlist(f"h{d}")
+                     if h in e.get("horas", HORAS_POR_DEFECTO)]
+            if not horas:                              # dijo "juego" pero no marcó hora
+                continue
+            entrada["horas"] = sorted(horas)
+        dias[str(d)] = entrada
     guardar_voto(e["id"], pid, {
         "nombre": yo["nombre"],
-        "juega": juega,
-        "presta_carnet": request.form.get("carnet") == "si",
+        "dias": dias,
         "cuando": ahora_ar().strftime("%Y-%m-%d %H:%M"),
     })
 
-    resumen = ""
-    for d, hs in sorted(juega.items()):
-        resumen += f"<div><b>{DIAS[int(d)]}</b>: {', '.join(h[:2] + ' h' for h in hs)}</div>"
-    if not resumen:
-        resumen = "<div>Este finde no jugás.</div>"
-    carnet = ("Prestás tu carnet 👍" if request.form.get("carnet") == "si"
-              else "No prestás tu carnet")
+    partes = []
+    for d in e.get("dias", DIAS_POR_DEFECTO):
+        v = dias.get(str(d))
+        if not v:
+            continue
+        if v["modo"] == MODO_JUEGO:
+            txt = "jugás a las " + ", ".join(f"{int(h[:2])}" for h in v["horas"]) + " h"
+        elif v["modo"] == MODO_PRESTA:
+            txt = "no jugás, prestás el carnet"
+        else:
+            txt = "no contás"
+        partes.append(f"<div><b>{DIAS[int(d)]}</b>: {txt}</div>")
+    resumen = "".join(partes) or "<div>No contestaste ningún día.</div>"
+
     cuerpo = f"""<div class="card ok">
       <div class="tic">✅</div>
       <h2>¡Listo, {escape(yo["nombre"].split()[0])}!</h2>
       <p class="sub">Anotado. Podés volver a entrar y cambiarlo cuando quieras.</p>
       <div style="text-align:left;background:#f6f8fb;border-radius:10px;padding:12px;font-size:.93rem">
-        {resumen}<div style="margin-top:6px;color:#6b7480">{carnet}</div>
+        {resumen}
       </div>
       <div style="height:12px"></div>
       <a href="{url_for('encuesta.ver', token=token)}"><button type="button" class="sec">
@@ -325,38 +366,40 @@ def _proximo(dia_semana, desde=None):
 
 
 def resumen_votos(e):
-    """Arma el resumen: quién votó, quién falta y cuántos hay por día/hora."""
+    """Qué contestó cada uno y con qué carnets se cuenta CADA DÍA.
+    La bolsa es por día porque el carnet se responde por día: alguien puede prestarlo
+    el sábado y no el domingo."""
     jugadores = _jugadores(e)
     votos = votos_de(e.get("id", ""))
     votaron, faltan = [], []
     for j in jugadores:
         v = votos.get(j["id"])
         (votaron if v else faltan).append({**j, "voto": v})
-    # cuántos pueden en cada día/hora
-    por_dia = {}
-    for d in e.get("dias", DIAS_POR_DEFECTO):
-        por_hora = {}
-        for h in e.get("horas", HORAS_TODAS):
-            gente = [v["nombre"] for pid, v in votos.items()
-                     if h in (v.get("juega", {}).get(str(d)) or [])]
-            if gente:
-                por_hora[h] = gente
-        por_dia[d] = por_hora
-    # ---- bolsa de carnets con la que se van a armar las reservas ----
-    # 1) los que prestan explícitamente en la encuesta
-    prestan = {pid: v["nombre"] for pid, v in votos.items() if v.get("presta_carnet")}
-    # 2) los que juegan: su carnet se usa en la cancha donde juegan
-    juegan = {pid: v["nombre"] for pid, v in votos.items() if v.get("juega")}
-    # 3) los prestados por gente de AFUERA de la encuesta (cargados a mano)
+
     nombres = {j["id"]: j["nombre"] for j in todos_los_jugadores()}
     extra = {str(p): nombres.get(str(p), str(p)) for p in (e.get("carnets_extra") or [])}
-    bolsa = {**prestan, **juegan, **extra}
-    # categorías que NO se superponen, para que el desglose sume exacto
-    solo_prestan = {p: n for p, n in prestan.items() if p not in juegan}
-    return {"votaron": votaron, "faltan": faltan, "por_dia": por_dia,
-            "carnets": sorted(prestan.values()), "total": len(jugadores),
-            "bolsa": bolsa, "prestan": prestan, "juegan": juegan, "extra": extra,
-            "solo_prestan": solo_prestan}
+
+    por_dia = {}
+    for d in e.get("dias", DIAS_POR_DEFECTO):
+        juegan, prestan, por_hora = {}, {}, {}
+        for pid, v in votos.items():
+            info = (v.get("dias") or {}).get(str(d))
+            if not info:
+                continue
+            if info["modo"] == MODO_JUEGO:
+                juegan[pid] = v["nombre"]
+                for h in info.get("horas", []):
+                    por_hora.setdefault(h, []).append(v["nombre"])
+            elif info["modo"] == MODO_PRESTA:
+                prestan[pid] = v["nombre"]
+        bolsa = {**juegan, **prestan, **extra}          # los extra sirven todos los días
+        por_dia[d] = {
+            "por_hora": {h: sorted(g) for h, g in sorted(por_hora.items())},
+            "juegan": juegan, "prestan": prestan, "extra": extra, "bolsa": bolsa,
+            "canchas_posibles": len(bolsa) // 4,
+        }
+    return {"votaron": votaron, "faltan": faltan, "total": len(jugadores),
+            "por_dia": por_dia, "extra": extra}
 
 
 def canchas_para(n):

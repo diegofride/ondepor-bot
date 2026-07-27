@@ -2582,37 +2582,51 @@ def encuesta_panel():
     link = url_encuesta(e["token"])
 
     # --- quién votó y quién falta ---
-    def chip_dia(v):
-        j = v.get("voto", {}).get("juega", {}) if v.get("voto") else {}
-        if not j:
-            return '<span class="pill vencida">no juega</span>'
+    def chips_voto(v):
+        voto = v.get("voto") or {}
         partes = []
-        for d, hs in sorted(j.items()):
-            partes.append(f"{enc.DIAS[int(d)][:3]} {len(hs)}h")
-        return " ".join(f'<span class="pill reservada">{p}</span>' for p in partes)
+        for d in e.get("dias", enc.DIAS_POR_DEFECTO):
+            info = (voto.get("dias") or {}).get(str(d))
+            dia3 = enc.DIAS[d][:3]
+            if not info:
+                continue
+            if info["modo"] == enc.MODO_JUEGO:
+                horas = " ".join(str(int(h[:2])) for h in info.get("horas", []))
+                partes.append(f'<span class="pill reservada">{dia3}: {horas}</span>')
+            elif info["modo"] == enc.MODO_PRESTA:
+                partes.append(f'<span class="pill programada">{dia3}: presta</span>')
+            else:
+                partes.append(f'<span class="pill vencida">{dia3}: no</span>')
+        return " ".join(partes) or '<span class="pill vencida">sin respuesta</span>'
 
     filas_ok = "".join(
-        f'<li class="reserva"><div class="sp"><div class="titulo"><span>{esc(v["nombre"])}</span>'
-        f'{"<span class=pill programada>presta carnet</span>" if v.get("voto", {}).get("presta_carnet") else ""}</div>'
-        f'<div class="meta">{chip_dia(v)}</div></div></li>' for v in r["votaron"])
+        f'<li class="reserva"><div class="sp"><div class="titulo"><span>{esc(v["nombre"])}</span></div>'
+        f'<div class="meta">{chips_voto(v)}</div></div></li>' for v in r["votaron"])
     filas_falta = "".join(
         f'<li><div class="sp">{esc(v["nombre"])}</div></li>' for v in r["faltan"])
 
-    # --- disponibilidad por día y hora ---
+    # --- por día: disponibilidad + carnets ---
     tablas = ""
-    for d, por_hora in r["por_dia"].items():
-        if not por_hora:
-            tablas += f'<div class="dia-res"><b>{enc.DIAS[d]}</b> <small class="hint">nadie todavía</small></div>'
-            continue
+    for d, info in r["por_dia"].items():
         filas = ""
-        for h, gente in sorted(por_hora.items()):
+        for h, gente in info["por_hora"].items():
             n = len(gente)
             canchas = enc.canchas_para(n)
-            color = "reservada" if canchas else "vencida"
-            filas += (f'<tr><td class="que">{h}</td><td><b>{n}</b></td>'
-                      f'<td><span class="pill {color}">{canchas} cancha(s)</span></td>'
+            tope = min(canchas, info["canchas_posibles"])   # limitado por los carnets
+            aviso = (f' <small class="hint">(los carnets alcanzan para {tope})</small>'
+                     if tope < canchas else "")
+            filas += (f'<tr><td class="que">{int(h[:2])} h</td><td><b>{n}</b></td>'
+                      f'<td><span class="pill {"reservada" if tope else "vencida"}">'
+                      f'{tope} cancha(s)</span>{aviso}</td>'
                       f'<td class="que"><small class="hint">{esc(", ".join(gente))}</small></td></tr>')
-        tablas += f"""<div style="margin-top:14px"><b>{enc.DIAS[d]}</b>
+        if not filas:
+            filas = '<tr><td class="que" colspan="4"><small class="hint">Nadie se anotó todavía.</small></td></tr>'
+        tablas += f"""<div style="margin-top:16px">
+          <b>{enc.DIAS[d]}</b>
+          <div style="margin:6px 0 8px"><small class="hint">
+            Carnets disponibles: <b>{len(info['bolsa'])}</b>
+            ({len(info['juegan'])} juegan · {len(info['prestan'])} prestan · {len(info['extra'])} de afuera)
+            → alcanzan para <b>{info['canchas_posibles']}</b> cancha(s)</small></div>
           <div style="overflow-x:auto"><table class="permisos" style="min-width:340px">
           <thead><tr><th>Hora</th><th>Anotados</th><th>Da para</th><th>Quiénes</th></tr></thead>
           <tbody>{filas}</tbody></table></div></div>"""
@@ -2660,25 +2674,10 @@ def encuesta_panel():
     </div>
 
     <div class="card">
-      <h2>{icon('check-circle')} Bolsa de carnets
-        <small class="hint" style="font-weight:400">· con estos se reservan las canchas</small></h2>
-      <div class="row" style="gap:10px">
-        <div class="stat"><b>{len(r['bolsa'])}</b><small>carnets en total</small></div>
-        <div class="stat"><b>{len(r['juegan'])}</b><small>de los que juegan</small></div>
-        <div class="stat"><b>{len(r['solo_prestan'])}</b><small>prestan sin jugar</small></div>
-        <div class="stat ok"><b>{len(r['extra'])}</b><small>prestados de afuera</small></div>
-      </div>
-      <div style="margin-top:12px">
-        <a class="btn sec" href="{url_for('encuesta_carnets')}">{icon('plus')} Sumar carnets de afuera</a>
-      </div>
-      {f'<div style="margin-top:10px"><small class="hint">De afuera: {esc(", ".join(sorted(r["extra"].values())))}</small></div>' if r['extra'] else ''}
-      <div style="margin-top:10px"><small class="hint">Alcanza para
-        <b>{len(r['bolsa']) // 4}</b> cancha(s) en simultáneo (4 carnets cada una).</small></div>
-    </div>
-
-    <div class="card">
-      <h2>{icon('chart')} Disponibilidad</h2>
-      <p><small class="hint">4 a 7 jugadores = 1 cancha · 8 a 11 = 2 · 12 o más = 3.</small></p>
+      <h2>{icon('chart')} Disponibilidad por día</h2>
+      <p><small class="hint">4 a 7 jugadores = 1 cancha · 8 a 11 = 2 · 12 o más = 3.
+        Y siempre limitado por los carnets que haya ese día (4 por cancha).</small></p>
+      <div><a class="btn sec" href="{url_for('encuesta_carnets')}">{icon('plus')} Sumar carnets de afuera</a></div>
       {tablas}
     </div>
     <script>
@@ -2840,7 +2839,7 @@ def encuesta_abrir():
         "token": secrets.token_urlsafe(9),
         "titulo": f"Finde del {sab.strftime('%d/%m')} y {dom.strftime('%d/%m')}",
         "dias": enc.DIAS_POR_DEFECTO,
-        "horas": enc.HORAS_TODAS,
+        "horas": enc.HORAS_POR_DEFECTO,   # solo los horarios en que juegan
         "fechas": {"5": sab.isoformat(), "6": dom.isoformat()},
         "estado": "abierta",
         "cierra_epoch": _epoch_ar(cierre),

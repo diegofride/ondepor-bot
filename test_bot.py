@@ -644,7 +644,7 @@ class TestEncuesta(BaseApp):
         e = enc.cargar_encuesta()
         c = self.web.app.test_client()
         c.get(f"/e/{e['token']}/soy/{pid}", follow_redirects=True)
-        c.post(f"/e/{e['token']}/votar", data={"h5": ["10:00"], "no6": "on", "carnet": "si"})
+        c.post(f"/e/{e['token']}/votar", data={"m5": "juego", "h5": ["10:00"], "m6": "no"})
         self.assertEqual(len(enc.votos_de(e["id"])), 1)
 
         # sin permiso no se borra
@@ -662,7 +662,7 @@ class TestEncuesta(BaseApp):
         r = self.cliente().post("/encuesta/abrir", data={}, follow_redirects=True)
         self.assertIn("al menos una persona", r.get_data(as_text=True))
 
-    def test_voto_separa_jugar_de_prestar_carnet(self):
+    def test_voto_una_decision_por_dia(self):
         import encuesta as enc
         todos = enc.todos_los_jugadores()
         pid = todos[0]["id"]
@@ -671,11 +671,12 @@ class TestEncuesta(BaseApp):
         c = self.web.app.test_client()
         c.get(f"/e/{e['token']}/soy/{pid}", follow_redirects=True)
         # no juega ningún día, pero SÍ presta el carnet
+        # no juega ningún día, pero presta el carnet el sábado
         c.post(f"/e/{e['token']}/votar",
-               data={"no5": "on", "no6": "on", "carnet": "si"}, follow_redirects=True)
+               data={"m5": enc.MODO_PRESTA, "m6": enc.MODO_NO}, follow_redirects=True)
         v = enc.votos_de(e["id"])[pid]
-        self.assertEqual(v["juega"], {})
-        self.assertTrue(v["presta_carnet"])
+        self.assertEqual(v["dias"]["5"]["modo"], enc.MODO_PRESTA)
+        self.assertEqual(v["dias"]["6"]["modo"], enc.MODO_NO)
 
     def test_bolsa_de_carnets_junta_las_tres_fuentes(self):
         """La bolsa = los que juegan + los que prestan en la encuesta + los prestados
@@ -688,32 +689,30 @@ class TestEncuesta(BaseApp):
         self._abrir([a, b, c])
         e = enc.cargar_encuesta()
 
-        def votar(pid, juega, presta):
+        def votar(pid, modo, horas=None):
             cl = self.web.app.test_client()
             cl.get(f"/e/{e['token']}/soy/{pid}")
-            datos = {"carnet": "si" if presta else "no", "no6": "on"}
-            if juega:
-                datos["h5"] = ["10:00"]
-            else:
-                datos["no5"] = "on"
+            datos = {"m5": modo, "m6": enc.MODO_NO}
+            if horas:
+                datos["h5"] = horas
             cl.post(f"/e/{e['token']}/votar", data=datos)
 
-        votar(a, True, True)      # juega y presta -> cuenta UNA vez
-        votar(b, False, True)     # presta sin jugar
-        votar(c, False, False)    # ni juega ni presta -> fuera de la bolsa
+        votar(a, enc.MODO_JUEGO, ["10:00"])   # juega -> su carnet cuenta
+        votar(b, enc.MODO_PRESTA)             # presta sin jugar
+        votar(c, enc.MODO_NO)                 # no cuenta
 
-        r = enc.resumen_votos(enc.cargar_encuesta())
-        self.assertEqual(len(r["bolsa"]), 2, "deberían ser solo a y b")
-        self.assertNotIn(c, r["bolsa"])
+        sab = enc.resumen_votos(enc.cargar_encuesta())["por_dia"][5]
+        self.assertEqual(len(sab["bolsa"]), 2, "deberían ser solo a y b")
+        self.assertNotIn(c, sab["bolsa"])
 
         # sumo uno de afuera de la encuesta
         self.cliente().post("/encuesta/carnets", data={"p": [afuera]}, follow_redirects=True)
-        r = enc.resumen_votos(enc.cargar_encuesta())
-        self.assertEqual(len(r["bolsa"]), 3)
-        self.assertIn(afuera, r["bolsa"])
-        # el desglose tiene que sumar exacto (sin superposición)
-        self.assertEqual(len(r["juegan"]) + len(r["solo_prestan"]) + len(r["extra"]),
-                         len(r["bolsa"]))
+        sab = enc.resumen_votos(enc.cargar_encuesta())["por_dia"][5]
+        self.assertEqual(len(sab["bolsa"]), 3)
+        self.assertIn(afuera, sab["bolsa"])
+        # el desglose suma exacto
+        self.assertEqual(len(sab["juegan"]) + len(sab["prestan"]) + len(sab["extra"]),
+                         len(sab["bolsa"]))
 
     def test_carnets_de_afuera_no_ofrece_a_los_de_la_encuesta(self):
         import re
