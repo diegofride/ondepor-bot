@@ -389,12 +389,15 @@ def resumen_votos(e):
             if info["modo"] == MODO_JUEGO:
                 juegan[pid] = v["nombre"]
                 for h in info.get("horas", []):
-                    por_hora.setdefault(h, []).append(v["nombre"])
+                    por_hora.setdefault(h, []).append(pid)
             elif info["modo"] == MODO_PRESTA:
                 prestan[pid] = v["nombre"]
         bolsa = {**juegan, **prestan, **extra}          # los extra sirven todos los días
+        ids = {h: sorted(g, key=lambda p: juegan.get(p, "").lower())
+               for h, g in sorted(por_hora.items())}
         por_dia[d] = {
-            "por_hora": {h: sorted(g) for h, g in sorted(por_hora.items())},
+            "por_hora_ids": ids,
+            "por_hora": {h: [juegan[p] for p in g] for h, g in ids.items()},
             "juegan": juegan, "prestan": prestan, "extra": extra, "bolsa": bolsa,
             "canchas_posibles": len(bolsa) // 4,
         }
@@ -407,3 +410,211 @@ def canchas_para(n):
     if n < 4:
         return 0
     return min(3, n // 4)
+
+
+# ======================================================================
+#  ARMADOR DE CRONOGRAMA: de los votos a las reservas
+#  Las reglas están explicadas en ARMADOR_CRONOGRAMA.md. El corazón es que
+#  un carnet no puede estar en dos reservas activas del mismo club a la vez,
+#  y que se libera cuando pasa el turno O cuando el cambio de nombres lo
+#  saca (10 min antes). Por eso los turnos se resuelven en orden cronológico
+#  arrastrando en qué ventanas queda tomado cada carnet.
+# ======================================================================
+DUR_TURNO_MIN = 60          # los turnos son de 1 hora
+CAMBIO_ANTES_MIN = 10       # el cambio de nombres se ejecuta 10 min antes
+APERTURA_ANTES_MIN = 24 * 60 - 1    # el turno se habilita 24 h antes + 1 min
+POR_CANCHA = 4
+CLUB_DIA, CLUB_NOCHE = 1102, 504
+
+
+def _dt(fecha, hora):
+    return datetime.datetime.fromisoformat(f"{fecha}T{hora}:00")
+
+
+def club_de(hora):
+    """De 8 a 17 es la sede de día; de 18 en adelante, la de noche (son clubes distintos
+    en OnDepor, y el límite de una reserva por persona es POR CLUB)."""
+    return CLUB_DIA if int(str(hora)[:2]) < 18 else CLUB_NOCHE
+
+
+def _reservadores():
+    """player_id -> nombre, solo los que tienen cuenta de OnDepor para disparar."""
+    return {str(r["player_id"]): r.get("nombre", "")
+            for r in rb._cargar("db_reservadores.json", "reservadores")
+            if r.get("player_id") and r.get("usuario")}
+
+
+class _Agenda:
+    """Ventanas en las que cada carnet está tomado, por club."""
+
+    def __init__(self):
+        self.tomado = {}
+
+    def libre(self, club, pid, cuando):
+        return not any(a <= cuando < b for a, b in self.tomado.get((club, pid), ()))
+
+    def ocupar(self, club, pid, desde, hasta):
+        self.tomado.setdefault((club, pid), []).append((desde, hasta))
+
+
+def hora_mas_votada(por_hora_ids):
+    """La hora con más gente anotada; si empatan, la más temprana."""
+    if not por_hora_ids:
+        return None
+    return sorted(por_hora_ids.items(), key=lambda kv: (-len(kv[1]), kv[0]))[0][0]
+
+
+def armar_cronograma(e, elecciones=None):
+    """Propone qué canchas reservar, con qué carnets y quién las dispara.
+
+    elecciones: {"5": ["10:00"], "6": ["16:00"]}; si un día no viene, se toma su
+    horario más votado. Devuelve los turnos en orden cronológico, listos para que
+    el admin los revise ANTES de que se programe nada.
+    """
+    r = resumen_votos(e)
+    fechas = e.get("fechas", {})
+    reservadores = _reservadores()
+
+    # ---- 1) qué turnos se juegan ----
+    turnos = []
+    for d in e.get("dias", DIAS_POR_DEFECTO):
+        info = r["por_dia"].get(d, {})
+        por_hora = info.get("por_hora_ids", {})
+        horas = (elecciones or {}).get(str(d))
+        if horas is None:
+            mejor = hora_mas_votada(por_hora)
+            horas = [mejor] if mejor else []
+        fecha = fechas.get(str(d))
+        for h in horas:
+            if h and fecha and h in por_hora:
+                turnos.append({"dia": d, "fecha": fecha, "hora": h})
+    turnos.sort(key=lambda t: (t["fecha"], t["hora"]))
+
+    # ---- 2) repartir carnets turno por turno, en orden ----
+    agenda = _Agenda()
+    salida = []
+    for t in turnos:
+        salida.append(_armar_turno(t, r, reservadores, agenda))
+    return {"turnos": salida, "resumen": r}
+
+
+def _armar_turno(t, r, reservadores, agenda):
+    info = r["por_dia"][t["dia"]]
+    nombres = {**info["bolsa"]}
+    club = club_de(t["hora"])
+    turno_dt = _dt(t["fecha"], t["hora"])
+    apertura = turno_dt - datetime.timedelta(minutes=APERTURA_ANTES_MIN)
+    cambio_dt = turno_dt - datetime.timedelta(minutes=CAMBIO_ANTES_MIN)
+    fin_dt = turno_dt + datetime.timedelta(minutes=DUR_TURNO_MIN)
+
+    anotados = list(info["por_hora_ids"].get(t["hora"], []))
+    avisos = []
+
+    # --- carnets libres EN EL MOMENTO DE RESERVAR (24 h antes) ---
+    def libre_al_reservar(p):
+        return agenda.libre(club, p, apertura)
+
+    juegan_libres = [p for p in anotados if libre_al_reservar(p)]
+    prestan_libres = [p for p in info["prestan"] if p not in anotados and libre_al_reservar(p)]
+    extra_libres = [p for p in info["extra"]
+                    if p not in anotados and p not in info["prestan"] and libre_al_reservar(p)]
+    disponibles = juegan_libres + prestan_libres + extra_libres
+
+    # --- cuántas canchas: la regla, los carnets y las cuentas de OnDepor ---
+    tope_regla = canchas_para(len(anotados))
+    tope_carnets = len(disponibles) // POR_CANCHA
+    # el reservador queda sí o sí en la reserva, así que conviene que sea alguien que juega
+    res_libres = ([p for p in disponibles if p in reservadores and p in anotados]
+                  + [p for p in disponibles if p in reservadores and p not in anotados])
+    tope_res = len(res_libres)
+    canchas = min(tope_regla, tope_carnets, tope_res)
+
+    def _canchas_txt(n):
+        return "1 cancha" if n == 1 else f"{n} canchas"
+
+    if canchas < tope_regla:
+        if tope_carnets < tope_regla and tope_carnets <= tope_res:
+            alcanzan = ("ninguna" if not tope_carnets else _canchas_txt(tope_carnets))
+            avisos.append(f"Se anotaron {len(anotados)} (dan para {_canchas_txt(tope_regla)}) "
+                          f"pero los carnets libres alcanzan para {alcanzan}.")
+        if tope_res < tope_regla and tope_res < tope_carnets:
+            avisos.append("Ninguno de los que tienen cuenta de OnDepor tiene el carnet libre a esa "
+                          "hora: no hay con quién disparar la reserva."
+                          if not tope_res else
+                          f"Solo hay {tope_res} reservador(es) con el carnet libre: no se puede "
+                          f"disparar más de {_canchas_txt(tope_res)}.")
+
+    tarde = apertura <= ahora_ar()          # la apertura ya pasó: no se puede programar
+    if tarde:
+        avisos.append(f"El turno se habilitó el {apertura.strftime('%d/%m a las %H:%M')} y ya pasó: "
+                      f"esta reserva no se puede programar (probá reservarla a mano).")
+    base = {"dia": t["dia"], "fecha": t["fecha"], "hora": t["hora"], "club_id": club,
+            "anotados": [{"id": p, "nombre": nombres.get(p, p)} for p in anotados],
+            "canchas": canchas, "tope_regla": tope_regla, "tope_carnets": tope_carnets,
+            "tope_reservadores": tope_res, "tarde": tarde,
+            "cambio_hora": cambio_dt.strftime("%H:%M"),
+            "apertura": apertura.strftime("%d/%m %H:%M"),
+            "detalle": [], "rotan": [], "sin_usar": [], "avisos": avisos}
+    if not canchas:
+        if len(anotados) < 4:
+            avisos.append(f"Solo {len(anotados)} anotado(s): no llega a una cancha.")
+        return base
+
+    # --- 3) elegir los carnets con los que se RESERVA ---
+    elegidos_res = res_libres[:canchas]
+    resto = [p for p in disponibles if p not in elegidos_res]
+    resto.sort(key=lambda p: p not in anotados)       # primero los que igual van a jugar
+    acompanan = resto[:canchas * (POR_CANCHA - 1)]
+
+    # --- 4) quién ocupa la cancha a la hora del turno (después del cambio) ---
+    # a esa altura ya se liberaron carnets de turnos anteriores, así que puede entrar
+    # gente que al momento de reservar tenía el carnet tomado
+    puestos = canchas * (POR_CANCHA - 1)              # el reservador ocupa el 4º lugar
+    jugadores_finales = ([p for p in acompanan if p in anotados]
+                         + [p for p in anotados
+                            if p not in acompanan and p not in elegidos_res
+                            and agenda.libre(club, p, cambio_dt)])
+    jugadores_finales = jugadores_finales[:puestos]
+    faltan = puestos - len(jugadores_finales)
+    if faltan > 0:                                     # se quedan carnets prestados adentro
+        relleno = [p for p in acompanan if p not in jugadores_finales][:faltan]
+        jugadores_finales += relleno
+        avisos.append(f"Quedan {len(relleno)} carnet(s) prestados dentro de la reserva: no hay "
+                      f"suficientes jugadores con el carnet libre para reemplazarlos.")
+
+    # --- 5) repartir en canchas ---
+    detalle = []
+    for k in range(canchas):
+        res_id = elegidos_res[k]
+        titulares = acompanan[k::canchas]
+        finales = jugadores_finales[k::canchas]
+        juega_el_res = res_id in anotados
+        if not juega_el_res:
+            avisos.append(f"{nombres.get(res_id, res_id)} reserva pero no juega: ocupa un lugar "
+                          f"de esa cancha (queda para 3 jugadores).")
+        detalle.append({
+            "reservador": {"id": res_id, "nombre": reservadores.get(res_id, nombres.get(res_id, res_id)),
+                           "juega": juega_el_res},
+            "titulares": [{"id": p, "nombre": nombres.get(p, p), "prestado": p not in anotados}
+                          for p in titulares],
+            "finales": [{"id": p, "nombre": nombres.get(p, p)} for p in finales],
+            # solo hace falta programar el cambio si entra alguien distinto (el orden no importa)
+            "hay_cambio": set(titulares) != set(finales),
+        })
+
+    # --- 6) anotar hasta cuándo queda tomado cada carnet ---
+    for p in elegidos_res + acompanan:
+        # el que se queda adentro al momento del turno lo devuelve recién al terminar
+        queda = p in elegidos_res or p in jugadores_finales
+        agenda.ocupar(club, p, apertura, fin_dt if queda else cambio_dt)
+    for p in jugadores_finales:
+        if p not in acompanan and p not in elegidos_res:
+            agenda.ocupar(club, p, cambio_dt, fin_dt)   # entra con el cambio
+
+    usados = set(elegidos_res) | set(acompanan) | set(jugadores_finales)
+    base["detalle"] = detalle
+    base["rotan"] = [{"id": p, "nombre": nombres.get(p, p)}
+                     for p in anotados if p not in usados]
+    base["sin_usar"] = [{"id": p, "nombre": nombres.get(p, p)}
+                        for p in info["bolsa"] if p not in usados]
+    return base
