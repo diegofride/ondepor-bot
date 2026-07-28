@@ -2952,10 +2952,19 @@ def encuesta_cronograma():
         bloques[b].append(rsv)
     cuerpo_bloques = "".join(
         f'<div class="card"><h2>{esc(b)} · {_plural(len(bloques[b]), "cancha", "canchas")}</h2>'
-        f'<p><small class="hint">Se reserva a la apertura ({esc(bloques[b][0]["apertura_txt"])}).'
-        f'</small></p>{"".join(_tarjeta_reserva(r) for r in bloques[b])}</div>'
+        f'<p><small class="hint">Cada cancha se reserva sola a su apertura '
+        f'(turno −24 h +1 min).</small></p>'
+        f'{"".join(_tarjeta_reserva(r) for r in bloques[b])}</div>'
         for b in orden) or ('<div class="card"><p><small class="hint">Con los votos '
                             'cargados no sale ninguna cancha.</small></p></div>')
+
+    sugs = "".join(f'<li><div class="sp"><small class="hint">{esc(s)}</small></div></li>'
+                   for s in plan.get("sugerencias", []))
+    if sugs:
+        cuerpo_bloques += (f'<div class="card"><h2>{icon("eye")} Para conseguir más '
+                           f'canchas</h2><p><small class="hint">Movidas chicas de horario '
+                           f'que destrabarían canchas — para preguntarle a los nombrados.'
+                           f'</small></p><ul class="lista compacta">{sugs}</ul></div>')
 
     extras = ""
     if plan["sin_vincular"]:

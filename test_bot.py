@@ -809,18 +809,19 @@ class TestCronograma(BaseApp):
             vistos |= ids
         self.assertTrue(self._sin_errores_de_verificacion(plan))
 
-    def test_la_maniana_no_se_pisa(self):
-        """Si los mismos juegan mañana y tarde, la tarde (prioridad) se lleva los
-        carnets y la mañana avisa que no se arma: la mañana no se pisa porque sus
-        jugadores no se liberan antes del turno."""
+    def test_ocho_carnets_no_alcanzan_para_maniana_y_tarde(self):
+        """Si los mismos 8 votan mañana y tarde, los carnets dan para UNA franja (todo
+        el sábado se reserva el viernes y la mañana no se puede pisar: sus jugadores
+        no se liberan antes del turno). La prioridad desempata a favor de la tarde y
+        la mañana queda explicada en las sugerencias."""
         import encuesta as enc
         votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["09:00", "15:00"]}}
                  for n in NOMBRES_TEST[:8]}
         plan = enc.armar_cronograma(self._encuesta(votos))
         self.assertEqual([r["hora"] for r in plan["reservas"]], ["15:00", "15:00"],
                          "solo la tarde: los 8 carnets quedaron ahí")
-        self.assertTrue(any("no se pisa" in a or "no se arma" in a for a in plan["avisos"]),
-                        plan["avisos"])
+        self.assertTrue(any("9 h" in s for s in plan["sugerencias"]),
+                        plan["sugerencias"])
         self.assertTrue(self._sin_errores_de_verificacion(plan))
 
     def test_flujo_del_finde_domingo_pisado_con_comodines(self):

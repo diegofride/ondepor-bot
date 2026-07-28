@@ -23,6 +23,7 @@ Archivos:
 """
 import json
 import secrets
+import itertools
 import datetime
 import unicodedata
 
@@ -521,169 +522,187 @@ class _Agenda:
         return max(fines) if fines else apertura
 
 
-def repartir_franja(opciones):
-    """Reparte a cada persona en UNA de las horas que votó dentro de la franja
-    (mañana u tarde). Trata de completar canchas de a 4 y vacía las horas que
-    quedan con menos de 4. Devuelve ({hora: [pids]}, afuera)."""
-    cnt, eleccion = {}, {}
-    # primero los que votaron una sola hora: no tienen a dónde moverse
-    for pid, hs in sorted(opciones.items(), key=lambda kv: (len(kv[1]), str(kv[0]))):
-        h = min(sorted(hs), key=lambda x: (cnt.get(x, 0) % 4 != 3, cnt.get(x, 0)))
-        eleccion[pid] = h
-        cnt[h] = cnt.get(h, 0) + 1
-    # horas cortas (<4): mover su gente a otra hora que haya votado
-    moviendo = True
-    while moviendo:
-        moviendo = False
-        for h in [x for x in cnt if 0 < cnt[x] < 4]:
-            for pid in [p for p, x in eleccion.items() if x == h]:
-                otras = [x for x in opciones[pid] if x != h and cnt.get(x, 0) >= 4]
-                if otras:
-                    dest = min(otras, key=lambda x: cnt[x])
-                    eleccion[pid] = dest
-                    cnt[h] -= 1
-                    cnt[dest] += 1
-                    moviendo = True
-    afuera = []
-    for h in [x for x in cnt if 0 < cnt[x] < 4]:
-        for pid in [p for p, x in list(eleccion.items()) if x == h]:
-            afuera.append(pid)
-            del eleccion[pid]
-    out = {}
-    for pid, h in eleccion.items():
-        out.setdefault(h, []).append(pid)
-    return {h: sorted(v) for h, v in sorted(out.items())}, afuera
-
-
 ES_MANANA = lambda h: int(str(h)[:2]) < 13          # noqa: E731
-MARGEN_CAMBIO_SEG = 300                             # el cambio corre 5 min después de liberarse
+MARGEN_CAMBIO_SEG = 300      # el cambio corre 5 min después de que se libera el último
+MAX_ROTAN = 2                # regla de Darío: rotando afuera a lo sumo 2 por turno
 
 
 def armar_cronograma(e, elecciones=None):
-    """Arma el flujo de reservas del finde entero según el modelo de Darío/Diego
-    (ver ARMADOR_CRONOGRAMA.md). Devuelve las reservas en orden cronológico con sus
-    cambios de carnets programados; nada se toca hasta que el admin aprueba.
-
-    El corazón: TODAS las reservas del sábado se hacen el viernes (carnets disjuntos)
-    y las del domingo el sábado. Los cambios van apenas se liberan los carnets de los
-    que entran. Prioridad de carnets (elegida por Diego):
-        sáb tarde → dom mañana → sáb mañana → dom tarde
-    'elecciones' se acepta por compatibilidad y se ignora (el reparto es automático).
-    """
+    """Arma el flujo de reservas del finde entero (modelo de Darío/Diego, ver
+    ARMADOR_CRONOGRAMA.md) buscando el reparto de carnets que dé MÁS HORAS DE JUEGO
+    en total; la prioridad (sáb tarde → dom mañana → sáb mañana → dom tarde) solo
+    desempata. Jugar y tener el carnet en la reserva son cosas distintas: el que votó
+    una hora juega esa hora aunque su carnet esté en otra reserva (rota); lo que se
+    reparte acá son los CARNETS. 'elecciones' se ignora (compatibilidad)."""
     r = resumen_votos(e)
     reservadores, sin_vincular = reservadores_con_carnet()
-    a = _Armador(e, r, reservadores)
-    a.armar()
-    verificar_plan(a.reservas, r, e)
-    return {"reservas": a.reservas, "avisos": a.avisos, "sobran": a.sobran(),
-            "resumen": r, "sin_vincular": sin_vincular}
+    plan = _Armador(e, r, reservadores).mejor_plan()
+    verificar_plan(plan["reservas"], r, e)
+    plan.update({"resumen": r, "sin_vincular": sin_vincular})
+    return plan
 
 
 class _Armador:
-    def __init__(self, e, r, reservadores):
-        self.e, self.r, self.cuentas = e, r, reservadores
-        self.agenda = _Agenda()
-        self.reservas = []
-        self.avisos = []                 # avisos globales
-        self.usados = set()              # pids que tocaron alguna reserva
+    def __init__(self, e, r, cuentas):
+        self.e, self.r, self.cuentas = e, r, cuentas
         self.dias = list(e.get("dias", DIAS_POR_DEFECTO))
         self.fechas = e.get("fechas", {})
-        # reparto de personas por (día, franja): mañana y tarde POR SEPARADO
-        # (decisión de Diego: el que votó ambas puede jugar dos veces).
-        # La TARDE se reparte entre sus horarios; la MAÑANA va en UN solo horario,
-        # el más votado (regla de Darío: la mañana es 1 cancha salvo sobra).
-        self.asig = {}
-        self.hora_maniana = {}
+        # por día: [(hora, votantes, canchas_max)] en orden cronológico
+        self.turnos = {}
         for d in self.dias:
-            por_hora = self.r["por_dia"].get(d, {}).get("por_hora_ids", {})
-            manianas = {h: pids for h, pids in por_hora.items() if ES_MANANA(h)}
-            if manianas:
-                mejor = sorted(manianas.items(), key=lambda kv: (-len(kv[1]), kv[0]))[0][0]
-                self.hora_maniana[d] = mejor
-                self.asig[(d, "m")] = {mejor: sorted(manianas[mejor])}
-                if len(manianas) > 1:
-                    self.avisos.append(f"{DIAS[d]} a la mañana se juega en un solo "
-                                       f"horario, el más votado: {int(mejor[:2])} h.")
-            votos = {}
-            for h, pids in por_hora.items():
-                if not ES_MANANA(h):
-                    for p in pids:
-                        votos.setdefault(p, []).append(h)
-            self.asig[(d, "t")], afuera = repartir_franja(votos)
-            for p in afuera:
-                self.avisos.append(f"{self._nombre(d, p)} quedó sin lugar el "
-                                   f"{DIAS[d].lower()} a la tarde: en sus horarios "
-                                   f"no se juntan 4.")
+            info = r["por_dia"].get(d, {})
+            self.turnos[d] = [(h, list(pids), canchas_para(len(pids)))
+                              for h, pids in sorted(info.get("por_hora_ids", {}).items())]
+        # cuántas horas vota cada uno por día (para elegir a quién poner en la reserva:
+        # mejor gastar el carnet del que vota UNA sola hora)
+        self.n_horas = {}
+        for d in self.dias:
+            for h, pids, _ in self.turnos[d]:
+                for p in pids:
+                    self.n_horas[(d, p)] = self.n_horas.get((d, p), 0) + 1
 
-    # ------------------------------------------------------------------
     def _nombre(self, d, pid):
-        return self.r["por_dia"].get(d, {}).get("bolsa", {}).get(pid) \
-            or self.cuentas.get(pid) or str(pid)
+        for dd in self.dias:
+            n = self.r["por_dia"].get(dd, {}).get("bolsa", {}).get(pid)
+            if n:
+                return n
+        return self.cuentas.get(pid, str(pid))
 
     def _pool_pisadores(self, d):
-        """Carnets para PISAR, en orden: prestados → de afuera → carnets sueltos de
-        gente que juega pero quedó rotando (su carnet no está en ninguna reserva)."""
+        """Carnets para pisar, en orden: prestados → de afuera → sueltos (de gente que
+        juega pero cuyo carnet no está en ninguna reserva en ese rango)."""
         info = self.r["por_dia"].get(d, {})
-        prestan = [p for p in info.get("prestan", {})]
+        prestan = list(info.get("prestan", {}))
         extra = [p for p in info.get("extra", {}) if p not in prestan]
-        sueltos = [p for p in info.get("juegan", {})
-                   if p not in prestan and p not in extra]
+        sueltos = [p for p in info.get("juegan", {}) if p not in prestan and p not in extra]
         return prestan + extra + sueltos
 
-    def armar(self):
-        # orden de PRIORIDAD (Diego): sáb tarde, dom mañana, sáb mañana, dom tarde
-        if len(self.dias) >= 2:
-            sab, dom = self.dias[0], self.dias[1]
-            orden = [(sab, "t"), (dom, "m"), (sab, "m"), (dom, "t")]
-        else:
-            orden = [(self.dias[0], "t"), (self.dias[0], "m")]
-        for d, fr in orden:
-            self._armar_franja(d, fr)
-        self.reservas.sort(key=lambda x: (x["fecha"], x["hora"], x["cancha_num"]))
-
-    def sobran(self):
-        """Carnets de la bolsa (todos los días) que no tocaron ninguna reserva."""
+    # ------------------------------------------------------------------
+    #  Búsqueda: enumera cuántas canchas darle a cada hora del primer día
+    #  (ahí está el conflicto grande: la tarde del sábado contra el domingo)
+    #  y el segundo día se llena greedy. Gana el plan con más canchas.
+    # ------------------------------------------------------------------
+    def mejor_plan(self):
+        d1 = self.dias[0]
+        bolsa1 = len(self.r["por_dia"].get(d1, {}).get("bolsa", {}))
+        opciones = [range(cmax + 1) for _, _, cmax in self.turnos[d1]]
+        mejor = None
+        for combo in itertools.product(*opciones):
+            if sum(combo) * POR_CANCHA > bolsa1:
+                continue
+            cfg = {h: c for (h, _, _), c in zip(self.turnos[d1], combo)}
+            plan = self._simular(cfg)
+            if plan and (mejor is None or plan["score"] > mejor["score"]):
+                mejor = plan
+        if mejor is None:
+            mejor = self._simular({h: 0 for h, _, _ in self.turnos[d1]}) or {
+                "reservas": [], "avisos": [], "score": (), "armadas": {}, "usados": set()}
+        mejor["sugerencias"] = self._sugerencias(mejor)
         todos = {}
         for d in self.dias:
             todos.update(self.r["por_dia"].get(d, {}).get("bolsa", {}))
-        return sorted(n for p, n in todos.items() if p not in self.usados)
+        mejor["sobran"] = sorted(n for p, n in todos.items() if p not in mejor["usados"])
+        mejor.pop("score", None)
+        mejor.pop("usados", None)
+        return mejor
+
+    def _simular(self, cfg_d1):
+        st = {"agenda": _Agenda(), "reservas": [], "avisos": [], "usados": set(),
+              "armadas": {}}
+        d1 = self.dias[0]
+        for h, pids, cmax in self.turnos[d1]:
+            c = cfg_d1.get(h, 0)
+            st["armadas"][(d1, h)] = c
+            if c and not self._armar_turno(st, d1, h, c):
+                return None                       # esta configuración no cierra
+        for d in self.dias[1:]:
+            for h, pids, cmax in self.turnos[d]:
+                st["armadas"][(d, h)] = 0
+                for c in range(cmax, 0, -1):
+                    foto = self._foto(st)
+                    if self._armar_turno(st, d, h, c):
+                        st["armadas"][(d, h)] = c
+                        break
+                    self._volver(st, foto)
+        st["score"] = self._puntaje(st)
+        return st
+
+    @staticmethod
+    def _foto(st):
+        return ({k: list(v) for k, v in st["agenda"].tomado.items()},
+                len(st["reservas"]), len(st["avisos"]), set(st["usados"]))
+
+    @staticmethod
+    def _volver(st, foto):
+        st["agenda"].tomado = foto[0]
+        del st["reservas"][foto[1]:]
+        del st["avisos"][foto[2]:]
+        st["usados"] = foto[3]
+
+    def _puntaje(self, st):
+        """Más canchas totales primero; la prioridad de Diego desempata:
+        sáb tarde → dom mañana → sáb mañana → dom tarde."""
+        a = st["armadas"]
+        d1 = self.dias[0]
+        d2 = self.dias[1] if len(self.dias) > 1 else None
+        def suma(d, fr):
+            if d is None:
+                return 0
+            return sum(c for (dd, h), c in a.items()
+                       if dd == d and ES_MANANA(h) == (fr == "m"))
+        return (sum(a.values()), suma(d1, "t"), suma(d2, "m"), suma(d1, "m"), suma(d2, "t"))
 
     # ------------------------------------------------------------------
-    def _armar_franja(self, d, fr):
+    def _armar_turno(self, st, d, hora, canchas, con_avisos=True):
         fecha = self.fechas.get(str(d))
         if not fecha:
-            return
-        for hora, pids in self.asig.get((d, fr), {}).items():
-            canchas = canchas_para(len(pids))
-            if fr == "m" and canchas > 1:
-                # regla de Darío: la mañana va con 1 cancha salvo que sobren carnets;
-                # la prioridad siempre es la tarde
-                self.avisos.append(f"{DIAS[d]} {int(hora[:2])} h: por cantidad darían "
-                                   f"{canchas} canchas pero la mañana se arma con 1 "
-                                   f"(la prioridad es la tarde).")
-                canchas = 1
-            if not canchas:
-                continue
-            # orden de titularidad en la tarde: primero los que NO juegan también la
-            # mañana (sus carnets no le hacen falta a nadie más), y de los que sí
-            # juegan la mañana, los que tienen cuenta de OnDepor van ÚLTIMOS: que
-            # roten acá y su carnet quede libre para poder DISPARAR la mañana
-            en_maniana = set()
-            if fr == "t":
-                for g in self.asig.get((d, "m"), {}).values():
-                    en_maniana.update(g)
-            pids = sorted(pids, key=lambda p: (
-                (2 if p in self.cuentas else 1) if p in en_maniana else 0,
-                p not in self.cuentas,
-                self._nombre(d, p).lower()))
-            grupos = [pids[k::canchas] for k in range(canchas)]
-            for i, grupo in enumerate(grupos, 1):
-                rsv = self._armar_reserva(d, fr, fecha, hora, i, grupo)
-                if rsv:
-                    self.reservas.append(rsv)
+            return False
+        _, votantes, _ = next(t for t in self.turnos[d] if t[0] == hora)
+        # a quién ponerle el carnet en la reserva: primero los que lo tienen libre todo
+        # el rango, y entre esos los que votan UNA sola hora (su carnet no le sirve a
+        # ningún otro turno); el resto juega igual, rotando
+        club = club_de(hora)
+        turno = _dt(fecha, hora)
+        apertura = turno - datetime.timedelta(minutes=APERTURA_ANTES_MIN)
+        fin = turno + datetime.timedelta(minutes=DUR_TURNO_MIN)
+        orden = sorted(votantes, key=lambda p: (
+            not st["agenda"].libre(club, p, apertura, fin),
+            -self.n_horas.get((d, p), 1) * -1,      # menos horas votadas primero
+            self._nombre(d, p).lower()))
+        nombrados = orden[:canchas * POR_CANCHA]
+        rotan = [p for p in votantes if p not in nombrados]
+        if len(nombrados) < canchas * POR_CANCHA:
+            return False                            # no hay gente para tantas canchas
 
-    # ------------------------------------------------------------------
-    def _armar_reserva(self, d, fr, fecha, hora, num, grupo):
+        # repartir en canchas cuidando que cada una tenga al menos una cuenta
+        grupos = [[] for _ in range(canchas)]
+        con_cta = [p for p in nombrados if p in self.cuentas]
+        sin_cta = [p for p in nombrados if p not in self.cuentas]
+        for i, p in enumerate(con_cta):
+            grupos[i % canchas].append(p)
+        for p in sin_cta:
+            grupos[min(range(canchas), key=lambda k: len(grupos[k]))].append(p)
+        if any(len(g) != POR_CANCHA for g in grupos):
+            # rebalancear los que sobraron de la vuelta de cuentas
+            todos = [p for g in grupos for p in g]
+            grupos = [todos[k::canchas] for k in range(canchas)]
+
+        hechas = []
+        for i, grupo in enumerate(grupos, 1):
+            rsv = self._armar_reserva(st, d, fecha, hora, i, grupo,
+                                      rotan if i == 1 else [])
+            if rsv is None:
+                return False
+            hechas.append(rsv)
+        st["reservas"] += hechas
+        if len(rotan) > MAX_ROTAN and con_avisos:
+            st["avisos"].append(
+                f"{DIAS[d]} {int(hora[:2])} h: rotan {len(rotan)} y el máximo es "
+                f"{MAX_ROTAN} — mirá las sugerencias para acomodarlo.")
+        return True
+
+    def _armar_reserva(self, st, d, fecha, hora, num, juegan, rotan):
+        agenda = st["agenda"]
         club = club_de(hora)
         turno = _dt(fecha, hora)
         apertura = turno - datetime.timedelta(minutes=APERTURA_ANTES_MIN)
@@ -691,79 +710,39 @@ class _Armador:
         avisos = []
         etiqueta = f"{DIAS[d]} {int(hora[:2])} h · cancha {num}"
 
-        # --- los 4 que JUEGAN (los de la encuesta); el resto del grupo rota adentro ---
-        # van primero los que tienen el carnet LIBRE todo el rango (entran directo, sin
-        # cambio) y entre ellos los que tienen cuenta de OnDepor (alguien tiene que
-        # disparar); el orden del grupo ya trae las preferencias de la franja
-        orden_base = {p: k for k, p in enumerate(grupo)}
-        grupo = sorted(grupo, key=lambda p: (not self.agenda.libre(club, p, apertura, fin),
-                                             orden_base[p]))
-        juegan = grupo[:POR_CANCHA]
-        rotan = grupo[POR_CANCHA:]
-        # la cancha necesita al menos una cuenta de OnDepor entre los que juegan (para
-        # disparar o retomar la reserva): si no quedó ninguna, entra una desde los que
-        # rotan en lugar del último titular
-        if not any(p in self.cuentas for p in juegan):
-            cand = next((p for p in rotan if p in self.cuentas), None)
-            if cand:
-                rotan[rotan.index(cand)] = juegan[-1]
-                juegan[-1] = cand
-
-        # --- carnet por carnet: directo si está libre hasta el final, si no se pisa ---
-        directos = [p for p in juegan
-                    if self.agenda.libre(club, p, apertura, fin)]
+        directos = [p for p in juegan if agenda.libre(club, p, apertura, fin)]
         pisados = [p for p in juegan if p not in directos]
 
         cambio_dt = None
         if pisados:
-            # ¿los que entran llegan a liberarse ANTES del turno? Esta condición sola
-            # produce la regla de Darío "la mañana del sábado no se pisa": lo que tiene
-            # tomado a un jugador del sáb a la mañana es la tarde de ese mismo día, que
-            # termina después → acá da "no se arma". El DOMINGO a la mañana en cambio
-            # SÍ se pisa (comodines): sus jugadores se liberan el sábado a la tarde.
-            libres_en = [self.agenda.libre_desde(club, p, turno, apertura) for p in pisados]
+            libres_en = [agenda.libre_desde(club, p, turno, apertura) for p in pisados]
             cambio_dt = max(libres_en) + datetime.timedelta(seconds=MARGEN_CAMBIO_SEG)
             if cambio_dt >= turno:
-                avisos.append(f"{etiqueta}: {', '.join(self._nombre(d, p) for p in pisados)} "
-                              f"no se libera(n) antes del turno: no se arma esta cancha.")
-                self.avisos += avisos
-                return None
+                return None                    # los que entran no se liberan a tiempo
 
-        # --- pisadores para los huecos ---
         pisadores = []
         if pisados:
             pool = [p for p in self._pool_pisadores(d)
-                    if p not in juegan and p not in pisadores
-                    and self.agenda.libre(club, p, apertura, cambio_dt)]
+                    if p not in juegan and agenda.libre(club, p, apertura, cambio_dt)]
             pisadores = pool[:len(pisados)]
             if len(pisadores) < len(pisados):
-                faltan = len(pisados) - len(pisadores)
-                avisos.append(f"{etiqueta}: no se arma — faltan {faltan} carnet(s) "
-                              f"para pisar (prestados y libres ya están todos usados).")
-                self.avisos += avisos
-                return None
+                return None                    # no hay con qué pisar
 
-        # --- quién dispara la reserva inicial (viernes/sábado a la apertura) ---
         res_ini = next((p for p in directos if p in self.cuentas), None) \
             or next((p for p in pisadores if p in self.cuentas), None)
         if not res_ini:
-            avisos.append(f"{etiqueta}: no se arma — ni los titulares ni los que pisan "
-                          f"tienen cuenta de OnDepor para disparar la reserva.")
-            self.avisos += avisos
-            return None
+            return None                        # nadie puede disparar la reserva
 
-        # --- quién queda de reservador cuando se juega (el cambio re-toma la reserva) ---
         res_fin = res_ini if res_ini in juegan else \
             next((p for p in juegan if p in self.cuentas), None)
         cambio = None
         if pisados:
             if res_fin is None:
-                # decisión de Diego: sin votante con cuenta NO se programa el cambio;
-                # queda avisado y lo resuelven a mano
+                # decisión de Diego: sin votante con cuenta el cambio queda a mano
                 avisos.append(f"{etiqueta}: ninguno de los que juegan tiene cuenta de "
                               f"OnDepor: el cambio de carnets queda para hacer A MANO "
                               f"(entran {', '.join(self._nombre(d, p) for p in pisados)}).")
-                cambio_dt = None       # los pisadores quedan adentro hasta el final
+                cambio_dt = None
             else:
                 cambio = {
                     "epoch": _epoch_ar(cambio_dt),
@@ -774,31 +753,60 @@ class _Armador:
                     "entran": pisados,
                 }
 
-        # --- anotar las ventanas en la agenda ---
         hasta_pisador = cambio_dt or fin
         for p in directos:
-            self.agenda.ocupar(club, p, apertura, fin)
+            agenda.ocupar(club, p, apertura, fin)
         for p in pisadores:
-            self.agenda.ocupar(club, p, apertura, hasta_pisador)
-        for p in pisados:
-            if cambio_dt:
-                self.agenda.ocupar(club, p, cambio_dt, fin)
-        self.usados |= set(directos) | set(pisadores) | (set(pisados) if cambio_dt else set())
+            agenda.ocupar(club, p, apertura, hasta_pisador)
+        if cambio_dt:
+            for p in pisados:
+                agenda.ocupar(club, p, cambio_dt, fin)
+        st["usados"] |= set(directos) | set(pisadores) | (set(pisados) if cambio_dt else set())
 
-        titulares_ini = [p for p in directos + pisadores if p != res_ini]
         nom = lambda p: self._nombre(d, p)      # noqa: E731
+        titulares = [p for p in directos + pisadores if p != res_ini]
         return {
-            "fecha": fecha, "hora": hora, "club_id": club, "dia": d, "franja": fr,
-            "cancha_num": num, "bloque": f"{DIAS[d]} · {'mañana' if fr == 'm' else 'tarde'}",
+            "fecha": fecha, "hora": hora, "club_id": club, "dia": d,
+            "franja": "m" if ES_MANANA(hora) else "t",
+            "cancha_num": num,
+            "bloque": f"{DIAS[d]} · {'mañana' if ES_MANANA(hora) else 'tarde'}",
             "apertura_txt": apertura.strftime("%d/%m %H:%M"),
             "reservador": {"id": res_ini, "nombre": self.cuentas.get(res_ini, nom(res_ini))},
             "titulares": [{"id": p, "nombre": nom(p), "pisa": p in pisadores}
-                          for p in titulares_ini][:POR_CANCHA - 1],
+                          for p in titulares][:POR_CANCHA - 1],
             "juegan": [{"id": p, "nombre": nom(p)} for p in juegan],
             "rotan": [{"id": p, "nombre": nom(p)} for p in rotan],
             "cambio": cambio,
             "avisos": avisos,
         }
+
+    # ------------------------------------------------------------------
+    def _sugerencias(self, plan):
+        """Para Darío: dónde un cambio chico de horarios daría más canchas u horas.
+        Se fija en horas con poca gente, en horas que quedaron sin canchas por falta
+        de carnets, y en turnos donde rotan más de 2."""
+        sug = []
+        armadas = plan.get("armadas", {})
+        for d in self.dias:
+            for h, pids, cmax in self.turnos[d]:
+                v, c = len(pids), armadas.get((d, h), 0)
+                vecinos = [p for hh, pp, _ in self.turnos[d] if hh != h
+                           and ES_MANANA(hh) == ES_MANANA(h) for p in pp if p not in pids]
+                nombres = sorted({self._nombre(d, p) for p in vecinos})[:5]
+                if 0 < v < POR_CANCHA:
+                    sug.append(f"{DIAS[d]} {int(h[:2])} h: hay {v} y hacen falta 4 para "
+                               f"abrir una cancha. Podrían sumarse: "
+                               f"{', '.join(nombres) or 'nadie de horas vecinas'}.")
+                elif c and v - c * POR_CANCHA == 3:
+                    sug.append(f"{DIAS[d]} {int(h[:2])} h: rotan 3 (máximo 2). Con UNO "
+                               f"más se abre otra cancha"
+                               + (f" (candidatos: {', '.join(nombres)})" if nombres else "")
+                               + "; si no, conviene que uno cambie de horario.")
+                elif cmax and c < cmax:
+                    sug.append(f"{DIAS[d]} {int(h[:2])} h: la gente daba para "
+                               f"{cmax} cancha(s) y salieron {c}: no alcanzaron los "
+                               f"carnets libres a esa hora.")
+        return sug
 
 
 def verificar_plan(reservas, resumen, e):
