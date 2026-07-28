@@ -851,44 +851,58 @@ class TestCronograma(BaseApp):
         con_extra = enc.armar_cronograma(e)["turnos"][0]["tope_carnets"]
         self.assertGreater(con_extra, sin_extra)
 
+    def test_pisa_la_cancha_con_los_carnets_prestados(self):
+        """REGLA DE DIEGO: los prestados están para PISAR la cancha. Se reserva con
+        ellos y los de los que juegan quedan libres — se meten después con el cambio
+        de nombres. Al revés (gastar los de los jugadores) el turno siguiente y el día
+        siguiente se quedan sin carnets."""
+        import encuesta as enc
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["10:00"]}} for n in NOMBRES_TEST[:8]}
+        votos.update({n: {"5": {"modo": enc.MODO_PRESTA}} for n in NOMBRES_TEST[8:]})
+        e = self._encuesta(votos)
+        t = enc.armar_cronograma(e)["turnos"][0]
+        self.assertEqual(t["canchas"], 2)
+
+        prestan = {NOMBRES_TEST[i] for i in range(8, len(NOMBRES_TEST))}
+        for c in t["detalle"]:
+            self.assertTrue(c["reservador"]["juega"], "el reservador queda fijo: tiene que jugar")
+            for x in c["titulares"]:
+                self.assertIn(x["nombre"], prestan, "se pisa con prestados, no con los que juegan")
+                self.assertTrue(x["prestado"])
+            self.assertTrue(c["hay_cambio"], "hay que programar el cambio por los que juegan")
+            for x in c["finales"]:
+                self.assertNotIn(x["nombre"], prestan, "después del cambio juegan los que juegan")
+
     def test_programar_crea_las_reservas_y_los_cambios(self):
         """El botón del panel tiene que dejar reservas de verdad, con su cambio de
-        nombres colgado para que corra 10 min antes. El turno de la tarde se reserva
-        con carnets prestados (los de los que juegan siguen tomados por el de la
-        mañana), así que ese sí o sí necesita el cambio."""
+        nombres colgado para que corra 10 min antes."""
         import encuesta as enc
-        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["10:00", "16:00"]}}
-                 for n in NOMBRES_TEST[:8]}
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["10:00"]}} for n in NOMBRES_TEST[:8]}
         votos.update({n: {"5": {"modo": enc.MODO_PRESTA}} for n in NOMBRES_TEST[8:]})
         self._encuesta(votos)
         self._W("reservas.json", {"reservas": []})
 
         r = self.cliente().post("/encuesta/cronograma/programar",
-                                data={"elegido": "1", "h5": ["10:00", "16:00"]},
-                                follow_redirects=True)
+                                data={"elegido": "1", "h5": "10:00"}, follow_redirects=True)
         self.assertEqual(r.status_code, 200)
         reservas = self.web.cargar("reservas.json", "reservas")
-        manana = [x for x in reservas if x["hora_desde"] == "10:00"]
-        tarde = [x for x in reservas if x["hora_desde"] == "16:00"]
-        self.assertEqual(len(manana), 2, "8 anotados dan 2 canchas a la mañana")
-        self.assertEqual(len(tarde), 1, "a la tarde solo alcanzan los carnets prestados")
+        self.assertEqual(len(reservas), 2, "8 anotados dan 2 canchas")
+        prestan = {self.pid[n] for n in NOMBRES_TEST[8:]}
+        juegan = {self.pid[n] for n in NOMBRES_TEST[:8]}
+
         for rsv in reservas:
             self.assertEqual(rsv["fecha"], self.sab)
             self.assertEqual(len(rsv["jugadores"]), 3)
             self.assertIn(rsv["reservador"], CON_CUENTA)
-
-        cp = tarde[0].get("cambio_prog")
-        self.assertTrue(cp, "el turno de la tarde tenía que quedar con el cambio programado")
-        self.assertEqual(cp["estado"], "pendiente")
-        self.assertEqual(cp["hora_ej"], "15:50", "el cambio va 10 min antes del turno")
-        self.assertEqual(cp["reservador"], tarde[0]["reservador"],
-                         "el cambio tiene que incluir al reservador")
-        self.assertEqual(len(cp["jugadores"]), 3)
-        self.assertNotEqual(sorted(cp["jugadores"]), sorted(tarde[0]["jugadores"]),
-                            "si no cambia nadie, no tiene sentido programar el cambio")
-        # los que entran con el cambio son los que dijeron que juegan
-        juegan = {self.pid[n] for n in NOMBRES_TEST[:8]}
-        self.assertTrue(set(cp["jugadores"]) <= juegan, "entró alguien que no juega")
+            self.assertTrue(set(rsv["jugadores"]) <= prestan,
+                            "la reserva se pisa con los carnets prestados")
+            cp = rsv.get("cambio_prog")
+            self.assertTrue(cp, "cada cancha tenía que quedar con el cambio programado")
+            self.assertEqual(cp["estado"], "pendiente")
+            self.assertEqual(cp["hora_ej"], "09:50", "el cambio va 10 min antes del turno")
+            self.assertEqual(cp["reservador"], rsv["reservador"],
+                             "el cambio tiene que incluir al reservador")
+            self.assertTrue(set(cp["jugadores"]) <= juegan, "entró alguien que no juega")
 
     def test_sin_permiso_no_se_programa(self):
         import encuesta as enc

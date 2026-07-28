@@ -70,6 +70,31 @@ uno son **16 carnets distintos**, no 8.
 
 ---
 
+## 3 bis. La regla de oro: se PISA con los prestados
+
+**Para reservar se usan los carnets PRESTADOS, no los de los que juegan.** Los prestados
+existen justamente para eso: pisar la cancha. Los que juegan entran después, con el
+cambio de nombres.
+
+Parece al revés de lo cómodo (usar el carnet del que va a jugar ahorraría el cambio),
+pero es lo único que cierra, por lo del punto 3:
+
+| Carnet usado para reservar | Queda tomado hasta |
+|---|---|
+| de alguien que **juega** | que **termina el turno** |
+| **prestado** | el **cambio de nombres**, 10 min antes |
+
+Gastar los carnets de los jugadores los deja tomados durante todo el turno, y ahí te
+quedás sin nada para el turno siguiente y para el día siguiente. Pisando con los
+prestados, esos mismos carnets se liberan 10 minutos antes de cada turno y **se
+reciclan**: con 6 prestados se pisan las 2 canchas del sábado y **las mismas 6** vuelven
+a servir para las 2 del domingo.
+
+La única excepción es el reservador (punto 4): su carnet entra sí o sí y se queda hasta
+que termina el turno. Uno por cancha, no hay forma de evitarlo.
+
+---
+
 ## 4. Cómo se arma cada cancha
 
 - Cada cancha la dispara un **reservador** (uno de los que tienen cuenta de OnDepor).
@@ -117,9 +142,9 @@ armador pudiera decidir solo. Se cambian en `_armar_turno()`.
    uno, y se puede marcar más de uno: la propuesta se rearma sola. Ahí se ve el costo
    real de jugar dos turnos el mismo día — el segundo se come otra tanda de carnets y
    suele dejar al día siguiente sin nada.
-2. **Quién entra en la reserva.** Primero los que juegan (su carnet iba a estar en la
-   cancha igual, y así no hay que cambiarle el nombre a nadie), después los prestados,
-   y último los de afuera. Se reparten por turnos entre las canchas.
+2. **Con qué se pisa.** Primero los prestados, después los de afuera, y **solo si no
+   alcanzan** se toca el carnet de alguien que juega (ver punto 3 bis). Se reparten por
+   turnos entre las canchas.
 3. **Quién dispara.** Entre los que tienen cuenta de OnDepor con el carnet libre, se
    prefiere a los que además juegan: el reservador queda sí o sí adentro de la reserva,
    así que si no juega ocupa un lugar al pedo (y el armador lo avisa).

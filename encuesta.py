@@ -567,7 +567,13 @@ def _armar_turno(t, r, reservadores, agenda):
     prestan_libres = [p for p in info["prestan"] if p not in anotados and libre_al_reservar(p)]
     extra_libres = [p for p in info["extra"]
                     if p not in anotados and p not in info["prestan"] and libre_al_reservar(p)]
-    disponibles = juegan_libres + prestan_libres + extra_libres
+    # ORDEN QUE IMPORTA (regla de Diego): para PISAR la cancha van primero los carnets
+    # PRESTADOS, y recién si no alcanzan se toca el de alguien que juega. Es al revés de
+    # lo que parece cómodo: el prestado se libera con el cambio de nombres (turno −10 min)
+    # y el del que juega recién cuando termina el turno, así que gastar los de los
+    # jugadores deja sin carnets al turno siguiente y al día siguiente.
+    prestados_libres = prestan_libres + extra_libres
+    disponibles = prestados_libres + juegan_libres
 
     # --- cuántas canchas: la regla, los carnets y las cuentas de OnDepor ---
     tope_regla = canchas_para(len(anotados))
@@ -609,10 +615,9 @@ def _armar_turno(t, r, reservadores, agenda):
             avisos.append(f"Solo {len(anotados)} anotado(s): no llega a una cancha.")
         return base
 
-    # --- 3) elegir los carnets con los que se RESERVA ---
+    # --- 3) elegir los carnets con los que se RESERVA (se pisa con los prestados) ---
     elegidos_res = res_libres[:canchas]
     resto = [p for p in disponibles if p not in elegidos_res]
-    resto.sort(key=lambda p: p not in anotados)       # primero los que igual van a jugar
     acompanan = resto[:canchas * (POR_CANCHA - 1)]
 
     # --- 4) quién ocupa la cancha a la hora del turno (después del cambio) ---
