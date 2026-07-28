@@ -494,13 +494,21 @@ def reservadores_con_carnet():
 
 
 class _Agenda:
-    """Ventanas en las que cada carnet está tomado, por club."""
+    """Ventanas en las que cada carnet está tomado, por club.
+
+    ⚠ Se pregunta por un RANGO, no por un instante. Preguntar "¿está libre cuando
+    reservo?" no alcanza: un carnet que se mete en el turno de las 9 con el cambio de
+    las 8:50 estaba libre el viernes a las 10:01, pero igual no se puede usar para
+    pisar el turno de las 10, porque esa reserva lo tiene tomado desde el viernes y se
+    pisarían entre ellas. Hay que mirar todo el rato que va a quedar tomado.
+    """
 
     def __init__(self):
         self.tomado = {}
 
-    def libre(self, club, pid, cuando):
-        return not any(a <= cuando < b for a, b in self.tomado.get((club, pid), ()))
+    def libre(self, club, pid, desde, hasta):
+        """¿El carnet está libre TODO el rango [desde, hasta)?"""
+        return all(hasta <= a or desde >= b for a, b in self.tomado.get((club, pid), ()))
 
     def ocupar(self, club, pid, desde, hasta):
         self.tomado.setdefault((club, pid), []).append((desde, hasta))
@@ -544,7 +552,58 @@ def armar_cronograma(e, elecciones=None):
     salida = []
     for t in turnos:
         salida.append(_armar_turno(t, r, reservadores, agenda))
+    verificar_plan(salida, r)
     return {"turnos": salida, "resumen": r, "sin_vincular": sin_vincular}
+
+
+def verificar_plan(turnos, resumen):
+    """Repasa el plan ya armado y marca lo que no cierra, con el motivo.
+
+    Son las dos reglas que tienen que valer sí o sí, chequeadas sobre el resultado y no
+    sobre el proceso (si el armador tuviera un error, acá se ve):
+      1. un carnet no puede estar en dos reservas que se pisan en el tiempo;
+      2. a la hora del turno, en la cancha tienen que estar los que pidieron ESE turno.
+    """
+    ocupa = {}                       # (club, pid) -> [(desde, hasta, "de qué turno")]
+    for t in turnos:
+        if not t["canchas"]:
+            continue
+        club = t["club_id"]
+        turno_dt = _dt(t["fecha"], t["hora"])
+        apertura = turno_dt - datetime.timedelta(minutes=APERTURA_ANTES_MIN)
+        cambio = turno_dt - datetime.timedelta(minutes=CAMBIO_ANTES_MIN)
+        fin = turno_dt + datetime.timedelta(minutes=DUR_TURNO_MIN)
+        anotados = {p["id"] for p in t["anotados"]}
+        etiqueta = f"{DIAS[t['dia']]} {t['hora']}"
+
+        for i, c in enumerate(t["detalle"], 1):
+            finales = {x["id"] for x in c["finales"]} | {c["reservador"]["id"]}
+            # --- regla 2: en la cancha juegan los que pidieron el turno ---
+            colados = [x["nombre"] for x in c["finales"] + [c["reservador"]]
+                       if x["id"] not in anotados]
+            if colados:
+                t["avisos"].append(
+                    f"Cancha {i}: a la hora del turno queda adentro {', '.join(colados)}, "
+                    f"que no se anotó a esa hora. Faltan jugadores con el carnet libre.")
+            # --- regla 1: nadie en dos reservas a la vez ---
+            tramos = [(c["reservador"]["id"], apertura, fin)]
+            for x in c["titulares"]:
+                hasta = fin if x["id"] in finales else cambio
+                tramos.append((x["id"], apertura, hasta))
+            for x in c["finales"]:
+                if x["id"] not in {y["id"] for y in c["titulares"]}:
+                    tramos.append((x["id"], cambio, fin))
+            for pid, desde, hasta in tramos:
+                for od, oh, oq in ocupa.get((club, pid), ()):
+                    if desde < oh and od < hasta:
+                        nombre = next((x["nombre"] for x in c["titulares"] + c["finales"]
+                                       + [c["reservador"]] if x["id"] == pid), pid)
+                        t["avisos"].append(
+                            f"Cancha {i}: el carnet de {nombre} ya está usado en "
+                            f"{oq} y todavía no se liberó. NO se puede reservar así.")
+                        break
+                ocupa.setdefault((club, pid), []).append((desde, hasta, etiqueta))
+    return turnos
 
 
 def _armar_turno(t, r, reservadores, agenda):
@@ -559,14 +618,20 @@ def _armar_turno(t, r, reservadores, agenda):
     anotados = list(info["por_hora_ids"].get(t["hora"], []))
     avisos = []
 
-    # --- carnets libres EN EL MOMENTO DE RESERVAR (24 h antes) ---
-    def libre_al_reservar(p):
-        return agenda.libre(club, p, apertura)
+    # --- carnets libres, mirando TODO el rato que van a quedar tomados ---
+    # el que PISA y después lo sacan ocupa desde que se reserva hasta el cambio;
+    # el que se queda adentro (reservador o jugador) ocupa hasta que termina el turno
+    def libre_pisando(p):
+        return agenda.libre(club, p, apertura, cambio_dt)
 
-    juegan_libres = [p for p in anotados if libre_al_reservar(p)]
-    prestan_libres = [p for p in info["prestan"] if p not in anotados and libre_al_reservar(p)]
+    def libre_hasta_el_final(p):
+        return agenda.libre(club, p, apertura, fin_dt)
+
+    prestan_libres = [p for p in info["prestan"] if p not in anotados and libre_pisando(p)]
     extra_libres = [p for p in info["extra"]
-                    if p not in anotados and p not in info["prestan"] and libre_al_reservar(p)]
+                    if p not in anotados and p not in info["prestan"] and libre_pisando(p)]
+    # un jugador que pisa NO se saca después (juega), así que necesita el rango completo
+    juegan_libres = [p for p in anotados if libre_hasta_el_final(p)]
     # ORDEN QUE IMPORTA (regla de Diego): para PISAR la cancha van primero los carnets
     # PRESTADOS, y recién si no alcanzan se toca el de alguien que juega. Es al revés de
     # lo que parece cómodo: el prestado se libera con el cambio de nombres (turno −10 min)
@@ -578,9 +643,11 @@ def _armar_turno(t, r, reservadores, agenda):
     # --- cuántas canchas: la regla, los carnets y las cuentas de OnDepor ---
     tope_regla = canchas_para(len(anotados))
     tope_carnets = len(disponibles) // POR_CANCHA
-    # el reservador queda sí o sí en la reserva, así que conviene que sea alguien que juega
-    res_libres = ([p for p in disponibles if p in reservadores and p in anotados]
-                  + [p for p in disponibles if p in reservadores and p not in anotados])
+    # el reservador queda sí o sí en la reserva hasta que termina el turno (el cambio no
+    # lo puede sacar), así que necesita el rango completo y conviene que sea de los que juegan
+    res_libres = ([p for p in anotados if p in reservadores and libre_hasta_el_final(p)]
+                  + [p for p in disponibles if p in reservadores and p not in anotados
+                     and libre_hasta_el_final(p)])
     tope_res = len(res_libres)
     canchas = min(tope_regla, tope_carnets, tope_res)
 
@@ -621,20 +688,27 @@ def _armar_turno(t, r, reservadores, agenda):
     acompanan = resto[:canchas * (POR_CANCHA - 1)]
 
     # --- 4) quién ocupa la cancha a la hora del turno (después del cambio) ---
-    # a esa altura ya se liberaron carnets de turnos anteriores, así que puede entrar
-    # gente que al momento de reservar tenía el carnet tomado
+    # el que entra con el cambio ocupa desde el cambio hasta que termina el turno; a esa
+    # altura ya se liberaron carnets de turnos anteriores, así que puede entrar gente
+    # que al momento de reservar tenía el carnet tomado
     puestos = canchas * (POR_CANCHA - 1)              # el reservador ocupa el 4º lugar
     jugadores_finales = ([p for p in acompanan if p in anotados]
                          + [p for p in anotados
                             if p not in acompanan and p not in elegidos_res
-                            and agenda.libre(club, p, cambio_dt)])
+                            and agenda.libre(club, p, cambio_dt, fin_dt)])
     jugadores_finales = jugadores_finales[:puestos]
     faltan = puestos - len(jugadores_finales)
-    if faltan > 0:                                     # se quedan carnets prestados adentro
-        relleno = [p for p in acompanan if p not in jugadores_finales][:faltan]
+    if faltan > 0:
+        # no hay con quién reemplazar: el prestado se queda adentro hasta que termina el
+        # turno, así que solo sirve si su carnet está libre también en ese rato
+        relleno = [p for p in acompanan if p not in jugadores_finales
+                   and agenda.libre(club, p, cambio_dt, fin_dt)][:faltan]
         jugadores_finales += relleno
         avisos.append(f"Quedan {len(relleno)} carnet(s) prestados dentro de la reserva: no hay "
-                      f"suficientes jugadores con el carnet libre para reemplazarlos.")
+                      f"suficientes jugadores con el carnet libre para reemplazarlos."
+                      if relleno else
+                      "No hay jugadores con el carnet libre para completar la cancha a la hora "
+                      "del turno: revisala a mano.")
 
     # --- 5) repartir en canchas ---
     detalle = []

@@ -746,13 +746,16 @@ class TestCronograma(BaseApp):
     def setUpClass(cls):
         super().setUpClass()
         cls.pid = {n: 900 + i for i, n in enumerate(NOMBRES_TEST)}
-        cls._W("db_jugadores.json", {"jugadores": [
-            {"nombre": n, "player_id": cls.pid[n]} for n in NOMBRES_TEST]})
-        cls._W("db_reservadores.json", {"reservadores": [
-            {"nombre": n, "usuario": f"{n.lower()}@x.com", "clave": "secreta",
-             "player_id": cls.pid[n]} for n in CON_CUENTA]})
         cls.sab = (datetime.date.today() + datetime.timedelta(days=9)).isoformat()
         cls.dom = (datetime.date.today() + datetime.timedelta(days=10)).isoformat()
+
+    def setUp(self):
+        # cada test parte de las MISMAS bases (algunos las sobreescriben con otra gente)
+        self._W("db_jugadores.json", {"jugadores": [
+            {"nombre": n, "player_id": self.pid[n]} for n in NOMBRES_TEST]})
+        self._W("db_reservadores.json", {"reservadores": [
+            {"nombre": n, "usuario": f"{n.lower()}@x.com", "clave": "secreta",
+             "player_id": self.pid[n]} for n in CON_CUENTA]})
 
     @classmethod
     def _W(cls, nombre, obj):
@@ -793,7 +796,12 @@ class TestCronograma(BaseApp):
 
     def test_un_carnet_no_se_repite_en_dos_turnos_del_mismo_dia(self):
         """Los dos turnos se reservan el día anterior, antes de cualquier cambio de
-        nombres: los carnets del primero siguen tomados cuando se reserva el segundo."""
+        nombres: los carnets del primero siguen tomados cuando se reserva el segundo.
+        Con 14 personas eso significa que el segundo turno directamente NO sale (el
+        primero consume 8 hasta que termina — 2 reservadores + 6 que juegan — y los 6
+        prestados que pisaron recién se liberan 10 min antes del PRIMER turno, mucho
+        después de que el segundo se tuvo que reservar). El armador tiene que decirlo,
+        no inventar canchas con carnets tomados."""
         import encuesta as enc
         votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["10:00", "16:00"]}}
                  for n in NOMBRES_TEST[:8]}
@@ -802,9 +810,82 @@ class TestCronograma(BaseApp):
         turnos = enc.armar_cronograma(e, {"5": ["10:00", "16:00"], "6": []})["turnos"]
         self.assertEqual(len(turnos), 2)
         primero, segundo = set(self._nombres(turnos[0])), set(self._nombres(turnos[1]))
-        self.assertTrue(primero and segundo)
         self.assertFalse(primero & segundo,
                          f"repite carnets entre los dos turnos del día: {primero & segundo}")
+        self.assertEqual(turnos[0]["canchas"], 2)
+        self.assertEqual(turnos[1]["canchas"], 0,
+                         "con 14 carnets el segundo turno del día no puede salir")
+        self.assertTrue(any("carnets" in a for a in turnos[1]["avisos"]),
+                        "tiene que explicar por qué no sale")
+
+    def test_flujo_completo_finde_con_grupo_grande(self):
+        """El caso real: ~26 personas, 2 turnos por día posibles, sábado y domingo.
+        Las DOS reglas que tienen que valer siempre (las dijo Diego):
+          1. un carnet nunca en dos reservas que se pisan en el tiempo;
+          2. a la hora del turno, en la cancha están los que pidieron ESE turno.
+        Se verifican sobre el plan entero reconstruyendo las ventanas a mano (cuenta
+        aparte de la del armador, para que un bug no se valide a sí mismo)."""
+        import datetime as dt
+        import encuesta as enc
+        nombres = [f"J{i:02d}" for i in range(18)] + [f"P{i:02d}" for i in range(8)]
+        pid = {n: 800 + i for i, n in enumerate(nombres)}
+        self._W("db_jugadores.json", {"jugadores": [
+            {"nombre": n, "player_id": pid[n]} for n in nombres]})
+        self._W("db_reservadores.json", {"reservadores": [
+            {"nombre": n, "usuario": "u@x", "clave": "k", "player_id": pid[n]}
+            for n in nombres[:6]]})
+
+        votos = {}
+        for i, n in enumerate(nombres[:18]):          # 18 juegan, repartidos en 2 horas
+            horas = ["09:00"] if i % 2 else ["09:00", "15:00"]
+            votos[str(pid[n])] = {"nombre": n, "cuando": "", "dias": {
+                "5": {"modo": "juego", "horas": horas},
+                "6": {"modo": "juego", "horas": ["10:00"]}}}
+        for n in nombres[18:]:                        # 8 prestan los dos días
+            votos[str(pid[n])] = {"nombre": n, "cuando": "", "dias": {
+                "5": {"modo": "presta"}, "6": {"modo": "presta"}}}
+        e = {"id": "enc-g", "token": "tok", "dias": [5, 6], "horas": enc.HORAS_POR_DEFECTO,
+             "fechas": {"5": self.sab, "6": self.dom}, "estado": "abierta",
+             "participantes": list(votos), "carnets_extra": []}
+        self._W("encuesta_config.json", e)
+        self._W("votos.json", {"votos": {"enc-g": votos}})
+
+        plan = enc.armar_cronograma(e, {"5": ["09:00", "15:00"], "6": ["10:00"]})
+
+        ventanas = {}                                  # pid -> [(desde, hasta)]
+        for t in plan["turnos"]:
+            turno = dt.datetime.fromisoformat(f"{t['fecha']}T{t['hora']}:00")
+            apertura = turno - dt.timedelta(minutes=24 * 60 - 1)
+            cambio = turno - dt.timedelta(minutes=10)
+            fin = turno + dt.timedelta(minutes=60)
+            anotados = {p["id"] for p in t["anotados"]}
+            for c in t["detalle"]:
+                # regla 2: a la hora del turno, adentro están los que pidieron ese turno
+                for x in c["finales"] + [c["reservador"]]:
+                    self.assertIn(x["id"], anotados,
+                                  f"{t['hora']}: {x['nombre']} queda en la cancha sin anotarse")
+                finales = {x["id"] for x in c["finales"]}
+                tramos = [(c["reservador"]["id"], apertura, fin)]
+                for x in c["titulares"]:
+                    tramos.append((x["id"], apertura, fin if x["id"] in finales else cambio))
+                for x in c["finales"]:
+                    if x["id"] not in {y["id"] for y in c["titulares"]}:
+                        tramos.append((x["id"], cambio, fin))
+                # regla 1: ninguna ventana se pisa con otra del mismo carnet
+                for p, desde, hasta in tramos:
+                    for (d0, h0) in ventanas.get(p, ()):
+                        self.assertFalse(desde < h0 and d0 < hasta,
+                                         f"carnet {p} en dos reservas a la vez "
+                                         f"({d0}-{h0} vs {desde}-{hasta})")
+                    ventanas.setdefault(p, []).append((desde, hasta))
+
+        # y el plan tiene que servir de algo: el finde se juega
+        self.assertGreaterEqual(sum(t["canchas"] for t in plan["turnos"]), 4,
+                                [t["avisos"] for t in plan["turnos"]])
+        # lo que no salió, avisado con motivo
+        for t in plan["turnos"]:
+            if t["canchas"] < t["tope_regla"]:
+                self.assertTrue(t["avisos"], f"{t['hora']} recortado sin explicar por qué")
 
     def test_el_carnet_prestado_se_recicla_al_dia_siguiente(self):
         """El cambio de nombres de 10 min antes libera el carnet prestado, así que el

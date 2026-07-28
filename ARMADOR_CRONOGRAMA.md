@@ -93,6 +93,28 @@ a servir para las 2 del domingo.
 La única excepción es el reservador (punto 4): su carnet entra sí o sí y se queda hasta
 que termina el turno. Uno por cancha, no hay forma de evitarlo.
 
+**Y la disponibilidad se mira por RANGO, no por instante.** Un carnet sirve para una
+reserva solo si está libre durante TODO el tiempo que esa reserva lo va a tener tomado.
+El error clásico (lo marcó Diego con el caso real): Adrián entra a la cancha de las 9
+con el cambio de las 8:50, así que su carnet está tomado de 8:50 a 10:00;
+la reserva de las 10 se hace el viernes 10:01 y lo tendría tomado desde ahí — las dos
+ventanas se pisan, no puede estar en ambas. Preguntar solo "¿está libre el viernes a las
+10:01?" (que sí lo estaba) deja pasar ese error.
+
+## 3 ter. La verificación final
+
+Después de armar, `verificar_plan()` repasa el plan TERMINADO contra las dos reglas que
+tienen que valer siempre (las dijo Diego), con una cuenta independiente de la del
+armador — así un bug del armador no se valida a sí mismo:
+
+1. **Un carnet nunca en dos reservas que se pisan en el tiempo.**
+2. **A la hora del turno, en la cancha están los que pidieron ESE turno.**
+
+Lo que no cumple queda marcado en la tarjeta del turno con el motivo ("el carnet de X ya
+está usado en Sábado 09:00 y todavía no se liberó", "queda adentro X, que no se anotó a
+esa hora"). Si un turno directamente no puede salir (sin carnets, sin reservador), sale
+con canchas = 0 y el porqué.
+
 ---
 
 ## 4. Cómo se arma cada cancha
