@@ -739,23 +739,22 @@ CON_CUENTA = ("Ana", "Dario", "Hugo", "Leo")     # los que pueden disparar la re
 
 
 class TestCronograma(BaseApp):
-    """El armador reparte los carnets entre las canchas. Lo que se prueba acá es que
-    respete el límite de una reserva activa por persona y por club."""
+    """El armador convierte los votos en el flujo de reservas del finde entero
+    (modelo de Darío/Diego, ver ARMADOR_CRONOGRAMA.md). Lo que se prueba acá son
+    las reglas duras: un carnet nunca en dos reservas que se pisen, las canchas se
+    pisan con prestados, y los cambios corren cuando los que entran se liberan."""
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
         cls.pid = {n: 900 + i for i, n in enumerate(NOMBRES_TEST)}
+        cls._W("db_jugadores.json", {"jugadores": [
+            {"nombre": n, "player_id": cls.pid[n]} for n in NOMBRES_TEST]})
+        cls._W("db_reservadores.json", {"reservadores": [
+            {"nombre": n, "usuario": f"{n.lower()}@x.com", "clave": "secreta",
+             "player_id": cls.pid[n]} for n in CON_CUENTA]})
         cls.sab = (datetime.date.today() + datetime.timedelta(days=9)).isoformat()
         cls.dom = (datetime.date.today() + datetime.timedelta(days=10)).isoformat()
-
-    def setUp(self):
-        # cada test parte de las MISMAS bases (algunos las sobreescriben con otra gente)
-        self._W("db_jugadores.json", {"jugadores": [
-            {"nombre": n, "player_id": self.pid[n]} for n in NOMBRES_TEST]})
-        self._W("db_reservadores.json", {"reservadores": [
-            {"nombre": n, "usuario": f"{n.lower()}@x.com", "clave": "secreta",
-             "player_id": self.pid[n]} for n in CON_CUENTA]})
 
     @classmethod
     def _W(cls, nombre, obj):
@@ -763,7 +762,6 @@ class TestCronograma(BaseApp):
             json.dump(obj, f, ensure_ascii=False, indent=2)
 
     def _encuesta(self, votos, extra=()):
-        """Deja armada una encuesta con esos votos y devuelve su dict."""
         import encuesta as enc
         e = {"id": "enc-test", "token": "tok", "dias": [5, 6], "horas": enc.HORAS_POR_DEFECTO,
              "fechas": {"5": self.sab, "6": self.dom}, "estado": "abierta",
@@ -776,222 +774,165 @@ class TestCronograma(BaseApp):
         return e
 
     @staticmethod
-    def _nombres(turno):
-        """Todos los que quedan metidos en alguna cancha de ese turno."""
-        fuera = []
-        for c in turno["detalle"]:
-            fuera.append(c["reservador"]["nombre"])
-            fuera += [x["nombre"] for x in c["titulares"]]
-        return fuera
+    def _sin_errores_de_verificacion(plan):
+        return not any("VERIFICACIÓN" in a for r in plan["reservas"] for a in r["avisos"])
 
-    def test_nueve_anotados_dan_dos_canchas_y_uno_rota(self):
+    def test_tarde_directa_sin_pisar_cuando_no_hace_falta(self):
+        """Si nadie juega a la mañana, la tarde va con los carnets de los que juegan
+        y los prestados quedan enteros (sirven para el día siguiente)."""
         import encuesta as enc
-        e = self._encuesta({n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["10:00"]}}
-                            for n in NOMBRES_TEST[:9]})
-        t = enc.armar_cronograma(e)["turnos"][0]
-        self.assertEqual(t["canchas"], 2)
-        self.assertEqual(len(self._nombres(t)), 8, "cada cancha se llena con 4")
-        self.assertEqual(len(t["rotan"]), 1, "el noveno rota")
-        self.assertEqual(len(set(self._nombres(t))), 8, "un carnet no puede ir dos veces")
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]}} for n in NOMBRES_TEST[:8]}
+        votos.update({n: {"5": {"modo": enc.MODO_PRESTA}} for n in NOMBRES_TEST[8:12]})
+        plan = enc.armar_cronograma(self._encuesta(votos))
+        self.assertEqual(len(plan["reservas"]), 2, "8 anotados dan 2 canchas")
+        for r in plan["reservas"]:
+            self.assertIsNone(r["cambio"], "sin conflicto no hay nada que cambiar")
+            self.assertFalse(any(x["pisa"] for x in r["titulares"]))
+        self.assertEqual(len(plan["sobran"]), 4, "los 4 prestados quedan sin usar")
+        self.assertTrue(self._sin_errores_de_verificacion(plan))
 
-    def test_un_carnet_no_se_repite_en_dos_turnos_del_mismo_dia(self):
-        """Los dos turnos se reservan el día anterior, antes de cualquier cambio de
-        nombres: los carnets del primero siguen tomados cuando se reserva el segundo.
-        Con 14 personas eso significa que el segundo turno directamente NO sale (el
-        primero consume 8 hasta que termina — 2 reservadores + 6 que juegan — y los 6
-        prestados que pisaron recién se liberan 10 min antes del PRIMER turno, mucho
-        después de que el segundo se tuvo que reservar). El armador tiene que decirlo,
-        no inventar canchas con carnets tomados."""
+    def test_maniana_y_tarde_del_mismo_dia_no_comparten_carnets(self):
+        """Todo el sábado se reserva el viernes: si la tarde ya usó el carnet de
+        alguien, ese carnet no puede aparecer también en la mañana."""
         import encuesta as enc
-        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["10:00", "16:00"]}}
+        # 4 juegan SOLO a la mañana y 8 SOLO a la tarde: no hay conflicto y salen las dos
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["09:00"]}} for n in NOMBRES_TEST[:4]}
+        votos.update({n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]}}
+                      for n in NOMBRES_TEST[4:12]})
+        plan = enc.armar_cronograma(self._encuesta(votos))
+        horas = sorted(r["hora"] for r in plan["reservas"])
+        self.assertEqual(horas, ["09:00", "15:00", "15:00"])
+        vistos = set()
+        for r in plan["reservas"]:
+            ids = {r["reservador"]["id"]} | {x["id"] for x in r["titulares"]}
+            self.assertFalse(ids & vistos, "un carnet apareció en dos reservas del sábado")
+            vistos |= ids
+        self.assertTrue(self._sin_errores_de_verificacion(plan))
+
+    def test_la_maniana_no_se_pisa(self):
+        """Si los mismos juegan mañana y tarde, la tarde (prioridad) se lleva los
+        carnets y la mañana avisa que no se arma: la mañana no se pisa porque sus
+        jugadores no se liberan antes del turno."""
+        import encuesta as enc
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["09:00", "15:00"]}}
                  for n in NOMBRES_TEST[:8]}
-        votos.update({n: {"5": {"modo": enc.MODO_PRESTA}} for n in NOMBRES_TEST[8:]})
-        e = self._encuesta(votos)
-        turnos = enc.armar_cronograma(e, {"5": ["10:00", "16:00"], "6": []})["turnos"]
-        self.assertEqual(len(turnos), 2)
-        primero, segundo = set(self._nombres(turnos[0])), set(self._nombres(turnos[1]))
-        self.assertFalse(primero & segundo,
-                         f"repite carnets entre los dos turnos del día: {primero & segundo}")
-        self.assertEqual(turnos[0]["canchas"], 2)
-        self.assertEqual(turnos[1]["canchas"], 0,
-                         "con 14 carnets el segundo turno del día no puede salir")
-        self.assertTrue(any("carnets" in a for a in turnos[1]["avisos"]),
-                        "tiene que explicar por qué no sale")
+        plan = enc.armar_cronograma(self._encuesta(votos))
+        self.assertEqual([r["hora"] for r in plan["reservas"]], ["15:00", "15:00"],
+                         "solo la tarde: los 8 carnets quedaron ahí")
+        self.assertTrue(any("no se pisa" in a or "no se arma" in a for a in plan["avisos"]),
+                        plan["avisos"])
+        self.assertTrue(self._sin_errores_de_verificacion(plan))
 
-    def test_flujo_completo_finde_con_grupo_grande(self):
-        """El caso real: ~26 personas, 2 turnos por día posibles, sábado y domingo.
-        Las DOS reglas que tienen que valer siempre (las dijo Diego):
-          1. un carnet nunca en dos reservas que se pisan en el tiempo;
-          2. a la hora del turno, en la cancha están los que pidieron ESE turno.
-        Se verifican sobre el plan entero reconstruyendo las ventanas a mano (cuenta
-        aparte de la del armador, para que un bug no se valide a sí mismo)."""
-        import datetime as dt
+    def test_flujo_del_finde_domingo_pisado_con_comodines(self):
+        """El corazón del modelo: el domingo a la mañana se reserva el sábado con
+        carnets que estén libres TODO el sábado (los prestados), y el cambio corre
+        cuando los que juegan terminan su turno del sábado — no 10 min antes."""
         import encuesta as enc
-        nombres = [f"J{i:02d}" for i in range(18)] + [f"P{i:02d}" for i in range(8)]
-        pid = {n: 800 + i for i, n in enumerate(nombres)}
-        self._W("db_jugadores.json", {"jugadores": [
-            {"nombre": n, "player_id": pid[n]} for n in nombres]})
-        self._W("db_reservadores.json", {"reservadores": [
-            {"nombre": n, "usuario": "u@x", "clave": "k", "player_id": pid[n]}
-            for n in nombres[:6]]})
-
-        votos = {}
-        for i, n in enumerate(nombres[:18]):          # 18 juegan, repartidos en 2 horas
-            horas = ["09:00"] if i % 2 else ["09:00", "15:00"]
-            votos[str(pid[n])] = {"nombre": n, "cuando": "", "dias": {
-                "5": {"modo": "juego", "horas": horas},
-                "6": {"modo": "juego", "horas": ["10:00"]}}}
-        for n in nombres[18:]:                        # 8 prestan los dos días
-            votos[str(pid[n])] = {"nombre": n, "cuando": "", "dias": {
-                "5": {"modo": "presta"}, "6": {"modo": "presta"}}}
-        e = {"id": "enc-g", "token": "tok", "dias": [5, 6], "horas": enc.HORAS_POR_DEFECTO,
-             "fechas": {"5": self.sab, "6": self.dom}, "estado": "abierta",
-             "participantes": list(votos), "carnets_extra": []}
-        self._W("encuesta_config.json", e)
-        self._W("votos.json", {"votos": {"enc-g": votos}})
-
-        plan = enc.armar_cronograma(e, {"5": ["09:00", "15:00"], "6": ["10:00"]})
-
-        ventanas = {}                                  # pid -> [(desde, hasta)]
-        for t in plan["turnos"]:
-            turno = dt.datetime.fromisoformat(f"{t['fecha']}T{t['hora']}:00")
-            apertura = turno - dt.timedelta(minutes=24 * 60 - 1)
-            cambio = turno - dt.timedelta(minutes=10)
-            fin = turno + dt.timedelta(minutes=60)
-            anotados = {p["id"] for p in t["anotados"]}
-            for c in t["detalle"]:
-                # regla 2: a la hora del turno, adentro están los que pidieron ese turno
-                for x in c["finales"] + [c["reservador"]]:
-                    self.assertIn(x["id"], anotados,
-                                  f"{t['hora']}: {x['nombre']} queda en la cancha sin anotarse")
-                finales = {x["id"] for x in c["finales"]}
-                tramos = [(c["reservador"]["id"], apertura, fin)]
-                for x in c["titulares"]:
-                    tramos.append((x["id"], apertura, fin if x["id"] in finales else cambio))
-                for x in c["finales"]:
-                    if x["id"] not in {y["id"] for y in c["titulares"]}:
-                        tramos.append((x["id"], cambio, fin))
-                # regla 1: ninguna ventana se pisa con otra del mismo carnet
-                for p, desde, hasta in tramos:
-                    for (d0, h0) in ventanas.get(p, ()):
-                        self.assertFalse(desde < h0 and d0 < hasta,
-                                         f"carnet {p} en dos reservas a la vez "
-                                         f"({d0}-{h0} vs {desde}-{hasta})")
-                    ventanas.setdefault(p, []).append((desde, hasta))
-
-        # y el plan tiene que servir de algo: el finde se juega
-        self.assertGreaterEqual(sum(t["canchas"] for t in plan["turnos"]), 4,
-                                [t["avisos"] for t in plan["turnos"]])
-        # lo que no salió, avisado con motivo
-        for t in plan["turnos"]:
-            if t["canchas"] < t["tope_regla"]:
-                self.assertTrue(t["avisos"], f"{t['hora']} recortado sin explicar por qué")
-
-    def test_el_carnet_prestado_se_recicla_al_dia_siguiente(self):
-        """El cambio de nombres de 10 min antes libera el carnet prestado, así que el
-        domingo se puede volver a usar (el turno del domingo abre el sábado)."""
-        import encuesta as enc
-        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["10:00"]},
+        # 8 juegan sáb 15 y dom 10; 4 prestan los dos días
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]},
                      "6": {"modo": enc.MODO_JUEGO, "horas": ["10:00"]}}
-                 for n in NOMBRES_TEST[:4]}
-        # 4 que solo prestan: son los únicos carnets libres para reservar el domingo
+                 for n in NOMBRES_TEST[:8]}
         votos.update({n: {"5": {"modo": enc.MODO_PRESTA}, "6": {"modo": enc.MODO_PRESTA}}
-                      for n in NOMBRES_TEST[4:8]})
-        e = self._encuesta(votos)
-        turnos = enc.armar_cronograma(e)["turnos"]
-        self.assertEqual(len(turnos), 2)
-        self.assertEqual(turnos[1]["canchas"], 1,
-                         "el domingo tendría que salir con los carnets prestados reciclados")
-        c = turnos[1]["detalle"][0]
-        self.assertTrue(c["hay_cambio"], "hay que cambiar los prestados por los que juegan")
-        self.assertTrue(any(x["prestado"] for x in c["titulares"]))
+                      for n in NOMBRES_TEST[8:12]})
+        plan = enc.armar_cronograma(self._encuesta(votos))
+        dom = [r for r in plan["reservas"] if r["fecha"] == self.dom]
+        self.assertEqual(len(dom), 1, "dom mañana capada a 1 cancha (regla de Darío)")
+        r = dom[0]
+        prestan = {str(self.pid[n]) for n in NOMBRES_TEST[8:12]}
+        self.assertTrue(all(x["pisa"] for x in r["titulares"]),
+                        "el domingo se pisa entero con comodines")
+        self.assertTrue({x["id"] for x in r["titulares"]} <= prestan)
+        self.assertIsNotNone(r["cambio"])
+        # el sáb 15:00 termina 16:00: el cambio va un rato después, no a las 9:50 del dom
+        fin_sab = datetime.datetime.fromisoformat(f"{self.sab}T16:00:00")
+        cambio = datetime.datetime.fromtimestamp(
+            r["cambio"]["epoch"], datetime.timezone.utc) + datetime.timedelta(hours=-3)
+        self.assertEqual(cambio.replace(tzinfo=None) - fin_sab,
+                         datetime.timedelta(seconds=enc.MARGEN_CAMBIO_SEG),
+                         "el cambio corre apenas se liberan los del sábado")
+        juegan = {str(self.pid[n]) for n in NOMBRES_TEST[:8]}
+        self.assertTrue({x["id"] for x in r["juegan"]} <= juegan,
+                        "después del cambio, en la cancha están los que votaron esa hora")
+        self.assertTrue(self._sin_errores_de_verificacion(plan))
 
-    def test_sin_reservador_con_carnet_libre_no_hay_cancha(self):
+    def test_sin_votante_con_cuenta_el_cambio_queda_a_mano(self):
+        """Decisión de Diego: si ninguno de los que juegan tiene cuenta de OnDepor
+        para retomar la reserva, no se programa el cambio: aviso y a mano."""
         import encuesta as enc
-        sin_cuenta = [n for n in NOMBRES_TEST if n not in CON_CUENTA][:8]
-        e = self._encuesta({n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]}}
-                            for n in sin_cuenta})
-        t = enc.armar_cronograma(e)["turnos"][0]
-        self.assertEqual(t["canchas"], 0)
-        self.assertTrue(any("OnDepor" in a for a in t["avisos"]), t["avisos"])
+        sin_cuenta = [n for n in NOMBRES_TEST if n not in CON_CUENTA]
+        # 4 sin cuenta juegan sáb y dom; un reservador juega SOLO el sáb (para que el
+        # sáb se pueda disparar); presta Ana (con cuenta, para el disparo del dom) + 3
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]},
+                     "6": {"modo": enc.MODO_JUEGO, "horas": ["10:00"]}}
+                 for n in sin_cuenta[:4]}
+        votos["Dario"] = {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]}}
+        votos["Ana"] = {"5": {"modo": enc.MODO_PRESTA}, "6": {"modo": enc.MODO_PRESTA}}
+        votos.update({n: {"5": {"modo": enc.MODO_PRESTA}, "6": {"modo": enc.MODO_PRESTA}}
+                      for n in sin_cuenta[4:7]})
+        plan = enc.armar_cronograma(self._encuesta(votos))
+        dom = [r for r in plan["reservas"] if r["fecha"] == self.dom]
+        self.assertEqual(len(dom), 1)
+        self.assertIsNone(dom[0]["cambio"])
+        self.assertTrue(any("A MANO" in a for a in dom[0]["avisos"]), dom[0]["avisos"])
 
-    def test_menos_de_cuatro_no_reserva(self):
+    def test_programar_deja_reservas_y_cambios_con_su_hora(self):
+        """El botón carga las reservas (cada una dispara a SU apertura, las del
+        domingo recién el sábado) y cuelga el cambio con su ej_epoch propio."""
         import encuesta as enc
-        e = self._encuesta({n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["11:00"]}}
-                            for n in NOMBRES_TEST[:3]})
-        t = enc.armar_cronograma(e)["turnos"][0]
-        self.assertEqual(t["canchas"], 0)
-        self.assertEqual(t["detalle"], [])
-
-    def test_los_carnets_de_afuera_suman_a_la_bolsa(self):
-        import encuesta as enc
-        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["10:00"]}} for n in NOMBRES_TEST[:8]}
-        e = self._encuesta(votos)
-        sin_extra = enc.armar_cronograma(e)["turnos"][0]["tope_carnets"]
-        e = self._encuesta(votos, extra=NOMBRES_TEST[8:12])
-        con_extra = enc.armar_cronograma(e)["turnos"][0]["tope_carnets"]
-        self.assertGreater(con_extra, sin_extra)
-
-    def test_pisa_la_cancha_con_los_carnets_prestados(self):
-        """REGLA DE DIEGO: los prestados están para PISAR la cancha. Se reserva con
-        ellos y los de los que juegan quedan libres — se meten después con el cambio
-        de nombres. Al revés (gastar los de los jugadores) el turno siguiente y el día
-        siguiente se quedan sin carnets."""
-        import encuesta as enc
-        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["10:00"]}} for n in NOMBRES_TEST[:8]}
-        votos.update({n: {"5": {"modo": enc.MODO_PRESTA}} for n in NOMBRES_TEST[8:]})
-        e = self._encuesta(votos)
-        t = enc.armar_cronograma(e)["turnos"][0]
-        self.assertEqual(t["canchas"], 2)
-
-        prestan = {NOMBRES_TEST[i] for i in range(8, len(NOMBRES_TEST))}
-        for c in t["detalle"]:
-            self.assertTrue(c["reservador"]["juega"], "el reservador queda fijo: tiene que jugar")
-            for x in c["titulares"]:
-                self.assertIn(x["nombre"], prestan, "se pisa con prestados, no con los que juegan")
-                self.assertTrue(x["prestado"])
-            self.assertTrue(c["hay_cambio"], "hay que programar el cambio por los que juegan")
-            for x in c["finales"]:
-                self.assertNotIn(x["nombre"], prestan, "después del cambio juegan los que juegan")
-
-    def test_programar_crea_las_reservas_y_los_cambios(self):
-        """El botón del panel tiene que dejar reservas de verdad, con su cambio de
-        nombres colgado para que corra 10 min antes."""
-        import encuesta as enc
-        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["10:00"]}} for n in NOMBRES_TEST[:8]}
-        votos.update({n: {"5": {"modo": enc.MODO_PRESTA}} for n in NOMBRES_TEST[8:]})
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]},
+                     "6": {"modo": enc.MODO_JUEGO, "horas": ["10:00"]}}
+                 for n in NOMBRES_TEST[:8]}
+        votos.update({n: {"5": {"modo": enc.MODO_PRESTA}, "6": {"modo": enc.MODO_PRESTA}}
+                      for n in NOMBRES_TEST[8:12]})
         self._encuesta(votos)
         self._W("reservas.json", {"reservas": []})
-
-        r = self.cliente().post("/encuesta/cronograma/programar",
-                                data={"elegido": "1", "h5": "10:00"}, follow_redirects=True)
+        r = self.cliente().post("/encuesta/cronograma/programar", follow_redirects=True)
         self.assertEqual(r.status_code, 200)
         reservas = self.web.cargar("reservas.json", "reservas")
-        self.assertEqual(len(reservas), 2, "8 anotados dan 2 canchas")
-        prestan = {self.pid[n] for n in NOMBRES_TEST[8:]}
-        juegan = {self.pid[n] for n in NOMBRES_TEST[:8]}
+        self.assertEqual(len(reservas), 3, "2 del sábado + 1 del domingo")
+        dom = [x for x in reservas if x["fecha"] == self.dom]
+        self.assertEqual(len(dom), 1)
+        cp = dom[0].get("cambio_prog")
+        self.assertTrue(cp, "el domingo tenía que quedar con su cambio colgado")
+        self.assertEqual(cp["estado"], "pendiente")
+        self.assertTrue(cp.get("ej_epoch"), "el cambio lleva su hora propia")
+        self.assertEqual(len(cp["jugadores"]), 3)
 
-        for rsv in reservas:
-            self.assertEqual(rsv["fecha"], self.sab)
-            self.assertEqual(len(rsv["jugadores"]), 3)
-            self.assertIn(rsv["reservador"], CON_CUENTA)
-            self.assertTrue(set(rsv["jugadores"]) <= prestan,
-                            "la reserva se pisa con los carnets prestados")
-            cp = rsv.get("cambio_prog")
-            self.assertTrue(cp, "cada cancha tenía que quedar con el cambio programado")
-            self.assertEqual(cp["estado"], "pendiente")
-            self.assertEqual(cp["hora_ej"], "09:50", "el cambio va 10 min antes del turno")
-            self.assertEqual(cp["reservador"], rsv["reservador"],
-                             "el cambio tiene que incluir al reservador")
-            self.assertTrue(set(cp["jugadores"]) <= juegan, "entró alguien que no juega")
+    def test_el_ejecutor_respeta_la_hora_propia_del_cambio(self):
+        """_revisar_cambios_prog tiene que disparar por ej_epoch cuando existe,
+        no por el viejo default de turno - 10 min."""
+        manana = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+        base = {"id": "cp-test", "fecha": manana, "hora_desde": "15:00",
+                "club_id": 1102, "reservador": "Ana", "jugadores": [1, 2, 3]}
+        disparados = []
+        original = self.web._ejecutar_cambio_prog
+        self.web._ejecutar_cambio_prog = lambda rid: disparados.append(rid)
+        try:
+            with self.web._estados_lock:
+                self.web._estados["cp-test"] = {"estado": "reservada"}
+            ahora = self.core.hora_real()
+            # ej_epoch en el futuro: aunque falten <10 min para nada, NO dispara
+            rsv = dict(base, cambio_prog={"estado": "pendiente", "ej_epoch": ahora + 900,
+                                          "reservador": "Ana", "jugadores": [1, 2, 3]})
+            self.web._revisar_cambios_prog([rsv])
+            self.assertEqual(disparados, [])
+            # ej_epoch ya pasado (y el turno no): dispara
+            self._W("reservas.json", {"reservas": [dict(base, cambio_prog={
+                "estado": "pendiente", "ej_epoch": ahora - 5,
+                "reservador": "Ana", "jugadores": [1, 2, 3]})]})
+            self.web._revisar_cambios_prog()
+            self.assertEqual(disparados, ["cp-test"])
+        finally:
+            self.web._ejecutar_cambio_prog = original
+            with self.web._estados_lock:
+                self.web._estados.pop("cp-test", None)
 
     def test_sin_permiso_no_se_programa(self):
         import encuesta as enc
-        self._encuesta({n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["10:00"]}}
+        self._encuesta({n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]}}
                         for n in NOMBRES_TEST[:8]})
         self._W("reservas.json", {"reservas": []})
         self.cliente("pablo", "clave2").post("/encuesta/cronograma/programar",
-                                             data={"elegido": "1", "h5": "10:00"},
                                              follow_redirects=True)
         self.assertEqual(self.web.cargar("reservas.json", "reservas"), [],
                          "un 'jugador' no debería poder programar el cronograma")

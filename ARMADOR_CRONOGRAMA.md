@@ -1,209 +1,96 @@
-# Armador de cronograma — de los votos de la encuesta a las reservas
+# Armador de cronograma — de los votos de la encuesta al flujo del finde
 
-Cómo se pasa de "27 personas votaron" a "estas canchas, con estos carnets, disparadas
-por estos reservadores". Documento de diseño: acá está la lógica acordada con Diego.
+Modelo definido por Darío (el que ayuda a Diego) el 28/7, con las decisiones de Diego
+anotadas abajo. Reemplaza a los tres intentos anteriores, que trataban cada turno como
+una isla. **La unidad no es el turno: es el finde entero**, porque las reservas y los
+cambios de carnets están encadenados en el tiempo.
 
-**Estado: IMPLEMENTADO.** La lógica está en `encuesta.armar_cronograma()` y la pantalla
-en `/encuesta/cronograma`. Nada se programa hasta que el admin toca el botón.
-
----
-
-## 1. Qué entra
-
-| Dato | De dónde sale |
-|---|---|
-| Quién juega cada día y a qué hora | votos de la encuesta (`modo = juego` + `horas`) |
-| Quién presta el carnet sin venir | votos (`modo = presta`) |
-| Carnets de afuera de la encuesta | `encuesta_config.json → carnets_extra` (los elige Diego a mano) |
-| Quién puede disparar una reserva | `db_reservadores.json` (los que tienen cuenta de OnDepor) |
-| Canchas del club | `reservar_bot.CANCHAS_POR_CLUB[1102]` (11 canchas: QUINTA, KINERET, CHACRA) |
+Implementado en `encuesta.armar_cronograma()` (clase `_Armador`); pantalla en
+`/encuesta/cronograma`. Nada se programa hasta que el admin toca el botón.
 
 ---
 
-## 2. Las reglas del grupo
+## 1. La línea de tiempo del finde
 
-**Cuántas canchas** (regla textual de Diego, ya implementada en `canchas_para()`):
+- **VIERNES** — se reservan TODOS los turnos del sábado (cada uno a su apertura,
+  turno −24h +1min). Como todavía no se liberó nada, las reservas del sábado usan
+  **carnets todos distintos entre sí**.
+- **SÁBADO a la mañana** — se reserva el turno del domingo a la mañana, con carnets
+  que estén libres durante todo el sábado (los "comodines").
+- **SÁBADO al terminar cada turno** — los carnets de los que jugaron se van liberando
+  y corren los CAMBIOS que los estaban esperando.
+- **SÁBADO a la tarde** — se reservan los turnos del domingo a la tarde, pisados con
+  los prestados que ya se liberaron.
+- **DOMINGO** — ídem: los cambios corren apenas se libera la gente del turno anterior.
 
-| Anotados | Canchas |
-|---|---|
-| menos de 4 | 0 — no se reserva |
-| 4 a 7 | 1 |
-| 8 a 11 | 2 |
-| 12 o más | 3 |
+**El cambio de carnets NO va 10 minutos antes del turno: va apenas se liberan los
+carnets de los que entran** (`ej_epoch` propio en `cambio_prog`; el viejo default de
+−10 min sigue para los cambios manuales). Cambiar temprano es lo que libera los
+prestados a tiempo para reservar lo que sigue.
 
-Tope duro de **3 canchas** por ahora.
+## 2. Las reglas duras
 
-**Cuántos carnets hacen falta:** 4 por cancha. La bolsa del día es
-`juegan + prestan + carnets_extra`. El tope real es el menor de los dos:
+1. **Un carnet no puede estar en dos reservas que se pisen en el tiempo** (por club).
+   El que juega lo devuelve al TERMINAR su turno; el que pisa lo devuelve en el
+   CAMBIO. `_Agenda` guarda las ventanas y se consulta siempre por RANGO, nunca por
+   instante (`libre(desde, hasta)` / `libre_desde` mira ventanas que se crucen).
+2. **Cuando se juega, en la cancha están los que votaron ESE horario.** Si en algún
+   turno no se puede, se marca con el motivo (pedido explícito de Diego).
+3. Regla de canchas por turno: 4-7 anotados → 1, 8-11 → 2, 12+ → 3 (tope 3). El que
+   sobra de los 4 titulares ROTA adentro del turno (juega igual).
+4. 4 carnets por cancha; el reservador (cuenta de OnDepor) es uno de ellos.
 
-```
-canchas = min( canchas_para(anotados_en_esa_hora), len(bolsa) // 4 )
-```
+## 3. Prioridad cuando los carnets no alcanzan (decisión de Diego)
 
-Esto ya se muestra en el panel: cuando los carnets no alcanzan, avisa
-*"(los carnets alcanzan para 2)"*.
+**sáb tarde → dom mañana → sáb mañana → dom tarde**
 
----
-
-## 3. La regla que manda: un carnet, una reserva
-
-**Un carnet no puede estar en dos reservas activas del mismo club al mismo tiempo.**
-Es el límite de OnDepor y es lo que obliga a repartir con cuidado.
-
-Un carnet se libera en dos momentos:
-
-1. cuando **pasa** el turno, o
-2. cuando el **cambio de nombres** (10 min antes del turno) lo saca de la reserva —
-   es decir, cuando el carnet prestado se reemplaza por el que realmente juega.
-
-De ahí salen dos consecuencias que cambian todo el armado:
-
-- ✅ **Los carnets del sábado se reciclan para el domingo.** El cambio de nombres del
-  sábado 9:50 los libera, y el turno del domingo abre 10:01 → hay 11 minutos de margen.
-- ❌ **NO se reciclan entre dos turnos del mismo día.** Los dos se reservan el día
-  anterior, con una hora de diferencia, mucho antes de que se haga ningún cambio de
-  nombres. Si el sábado hay turno a las 10 y a las 16, **cada uno necesita sus propios
-  4 carnets por cancha**.
-
-Esta última es la restricción más cara: dos turnos el mismo sábado con 2 canchas cada
-uno son **16 carnets distintos**, no 8.
-
----
-
-## 3 bis. La regla de oro: se PISA con los prestados
-
-**Para reservar se usan los carnets PRESTADOS, no los de los que juegan.** Los prestados
-existen justamente para eso: pisar la cancha. Los que juegan entran después, con el
-cambio de nombres.
-
-Parece al revés de lo cómodo (usar el carnet del que va a jugar ahorraría el cambio),
-pero es lo único que cierra, por lo del punto 3:
-
-| Carnet usado para reservar | Queda tomado hasta |
-|---|---|
-| de alguien que **juega** | que **termina el turno** |
-| **prestado** | el **cambio de nombres**, 10 min antes |
-
-Gastar los carnets de los jugadores los deja tomados durante todo el turno, y ahí te
-quedás sin nada para el turno siguiente y para el día siguiente. Pisando con los
-prestados, esos mismos carnets se liberan 10 minutos antes de cada turno y **se
-reciclan**: con 6 prestados se pisan las 2 canchas del sábado y **las mismas 6** vuelven
-a servir para las 2 del domingo.
-
-La única excepción es el reservador (punto 4): su carnet entra sí o sí y se queda hasta
-que termina el turno. Uno por cancha, no hay forma de evitarlo.
-
-**Y la disponibilidad se mira por RANGO, no por instante.** Un carnet sirve para una
-reserva solo si está libre durante TODO el tiempo que esa reserva lo va a tener tomado.
-El error clásico (lo marcó Diego con el caso real): Adrián entra a la cancha de las 9
-con el cambio de las 8:50, así que su carnet está tomado de 8:50 a 10:00;
-la reserva de las 10 se hace el viernes 10:01 y lo tendría tomado desde ahí — las dos
-ventanas se pisan, no puede estar en ambas. Preguntar solo "¿está libre el viernes a las
-10:01?" (que sí lo estaba) deja pasar ese error.
-
-## 3 ter. La verificación final
-
-Después de armar, `verificar_plan()` repasa el plan TERMINADO contra las dos reglas que
-tienen que valer siempre (las dijo Diego), con una cuenta independiente de la del
-armador — así un bug del armador no se valida a sí mismo:
-
-1. **Un carnet nunca en dos reservas que se pisan en el tiempo.**
-2. **A la hora del turno, en la cancha están los que pidieron ESE turno.**
-
-Lo que no cumple queda marcado en la tarjeta del turno con el motivo ("el carnet de X ya
-está usado en Sábado 09:00 y todavía no se liberó", "queda adentro X, que no se anotó a
-esa hora"). Si un turno directamente no puede salir (sin carnets, sin reservador), sale
-con canchas = 0 y el porqué.
-
----
+- La tarde siempre manda ("siempre hay más gente a la tarde").
+- Las MAÑANAS van en **un solo horario, el más votado, con 1 cancha** aunque por
+  cantidad dieran más (regla de Darío: "1 cancha salvo que sobren carnets").
+- El dom tarde va último porque es el más barato: se pisa con prestados que vuelven
+  solos (se liberan con los cambios del día).
 
 ## 4. Cómo se arma cada cancha
 
-- Cada cancha la dispara un **reservador** (uno de los que tienen cuenta de OnDepor).
-  Su carnet cuenta como uno de los 4 → hacen falta 3 carnets más.
-- En la reserva tienen que estar **los que juegan**. Vale meter a alguien que jugó el
-  turno anterior aunque no juegue este (regla del club, sirve de comodín cuando el
-  cuarto no aparece).
-- Un reservador **no puede figurar como jugador en otra reserva** del mismo turno, ni al
-  revés. La app ya lo detecta y **avisa** (no bloquea — así lo pidió Diego).
-- **La rotación no es problema del armador.** Si son 9 y hay 2 canchas (8 lugares), el
-  noveno rota adentro del turno: rota la gente en la cancha, no los carnets de la
-  reserva.
+- **Directos**: los que juegan esa hora y tienen el carnet libre TODO el rango
+  [apertura → fin del turno] entran con su propio carnet. Sin cambio.
+- **Pisados**: al que juega pero tiene el carnet tomado (por otro turno anterior) lo
+  pisa un carnet del pool — orden: **prestados → de afuera → sueltos** (carnets de
+  gente que juega pero quedó rotando). El cambio se programa para cuando el último de
+  los que entran queda libre (+5 min, `MARGEN_CAMBIO_SEG`).
+- Si los que entran **no se liberan antes del turno**, la cancha no se arma (esto es
+  lo que hace que la mañana del sábado nunca se pueda pisar: a sus jugadores los
+  tiene tomados la tarde, que termina después).
+- **El cambio = cancelar + retomar** (el club no permite editar). Lo retoma una
+  cuenta de OnDepor de los que juegan; si ninguno tiene cuenta, el cambio queda **A
+  MANO** con aviso (decisión de Diego — no se mete un colado).
+- En la elección de titulares de la tarde, los votantes de la mañana rotan (así su
+  carnet queda libre para la mañana), y los que además tienen cuenta rotan primero
+  (la mañana necesita quién la dispare). Cada cancha garantiza al menos una cuenta
+  entre los que juegan.
 
----
+## 5. Verificación
 
-## 5. Qué tendría que devolver
+`verificar_plan()` barre el plan terminado contra las dos reglas duras y marca
+cualquier violación con "⚠ VERIFICACIÓN". Si aparece una, la pantalla bloquea el
+botón de programar. No debería saltar nunca: está para que un bug no llegue a
+OnDepor (en el desarrollo ya cazó dos).
 
-Para cada día votado, una propuesta como esta, **para que Diego apruebe antes de que se
-programe nada**:
+## 6. Trampa de datos: el `player_id` del reservador
 
-```
-SÁBADO 2/8 — 10:00 h  ·  9 anotados → 2 canchas
-  Cancha A   reservador: Diego G.      + Pablo B. · Darío W. · Jonathan E.
-  Cancha B   reservador: Daniel W.     + Marcelo S. · Gustavo K. · Leo P.
-  Rota: Ariel M. (9º)
-  Cambio de nombres programado 9:50 → entran los que juegan de verdad
+En `db_reservadores.json` el `player_id` es opcional y casi nadie lo tenía. El
+armador lo necesita (el carnet del reservador entra en la reserva). Se resuelve por
+nombre contra `db_jugadores` con acentos y apodos (`vincular_carnet()`), sin adivinar
+si hay dos candidatos; al guardar un reservador nuevo se vincula solo.
 
-DOMINGO 3/8 — 16:00 h  ·  5 anotados → 1 cancha
-  Cancha A   reservador: Pablo B.      + Diego G. · Darío W. · Daniel W.
-  (usa carnets liberados por el cambio del sábado)
-```
+## 7. Dónde está cada cosa
 
-Aprobado eso, se cargan las reservas programadas y los cambios de nombre, que es todo
-maquinaria que **ya existe** en la app.
-
----
-
-## 6. Los criterios que quedaron elegidos
-
-Ninguno es una regla del club: son los desempates que había que definir para que el
-armador pudiera decidir solo. Se cambian en `_armar_turno()`.
-
-1. **Qué hora se juega cada día.** Por defecto la más votada (si empatan, la más
-   temprana), pero en la pantalla hay un chip por horario con cuánta gente hay en cada
-   uno, y se puede marcar más de uno: la propuesta se rearma sola. Ahí se ve el costo
-   real de jugar dos turnos el mismo día — el segundo se come otra tanda de carnets y
-   suele dejar al día siguiente sin nada.
-2. **Con qué se pisa.** Primero los prestados, después los de afuera, y **solo si no
-   alcanzan** se toca el carnet de alguien que juega (ver punto 3 bis). Se reparten por
-   turnos entre las canchas.
-3. **Quién dispara.** Entre los que tienen cuenta de OnDepor con el carnet libre, se
-   prefiere a los que además juegan: el reservador queda sí o sí adentro de la reserva,
-   así que si no juega ocupa un lugar al pedo (y el armador lo avisa).
-
----
-
-## 6 bis. Trampa de datos: el `player_id` del reservador
-
-En `db_reservadores.json` el campo `player_id` es **opcional y casi nadie lo tiene**
-(11 de 12 en la base real): el resto de la app trabaja por nombre y nunca lo necesitó.
-El armador **sí lo necesita**, porque el carnet del reservador entra en la reserva y hay
-que saber cuál es. Se resuelve contra `db_jugadores` por nombre aguantando acentos
-(*Dario* ↔ *Darío*) y apodos (*Rafael* ↔ *Rafa*), pero **solo cuando no hay dos
-candidatos posibles**: con "Jony Enser" y dos "Enser" en la base, prefiere avisar antes
-que meter el carnet equivocado en una reserva. Los que no se vinculan salen listados en
-la pantalla.
-
-Otro criterio del mismo tipo: para un turno solo se cuentan como carnets disponibles los
-de **los anotados a ESA hora** más los prestados del día. El carnet de alguien que juega
-a otra hora del mismo día se deja quieto, porque usarlo lo dejaría afuera de su propio
-turno (los dos se reservan el día anterior, ver punto 3).
-
----
-
-## 7. Dónde está cada cosa en el código
-
-| Pieza | Dónde está |
+| Pieza | Dónde |
 |---|---|
-| El armador entero | `encuesta.armar_cronograma()` → `_armar_turno()` |
-| Ventanas en que cada carnet está tomado | `encuesta._Agenda` |
-| Cuántas canchas dan N anotados | `encuesta.canchas_para(n)` |
-| Bolsa de carnets y anotados por hora | `encuesta.resumen_votos()` → `por_dia[d]` |
-| Carnets prestados de afuera | `encuesta_config.json → carnets_extra` |
-| La pantalla de revisión | `webapp.encuesta_cronograma()` (`/encuesta/cronograma`) |
-| El botón que lo vuelve reservas | `webapp.encuesta_cronograma_programar()` |
-| Programar el cambio de nombres | `webapp._programar_cambio_del_cronograma()` |
-| Tests | `test_bot.TestCronograma` (8 casos) |
-
-El cambio de nombres se cuelga de la reserva al crearla, pero el ejecutor solo lo corre
-si para entonces la reserva está **confirmada** — si la cancha no entró, no se toca nada.
+| Armador completo | `encuesta._Armador` (+ `armar_cronograma()`) |
+| Ventanas de carnets | `encuesta._Agenda` |
+| Reparto de gente por franja | `encuesta.repartir_franja()` (la tarde; la mañana va al horario más votado) |
+| Verificación | `encuesta.verificar_plan()` |
+| Pantalla + botón | `webapp.encuesta_cronograma()` / `encuesta_cronograma_programar()` |
+| Cambio con hora propia | `cambio_prog.ej_epoch`, ejecutado por `webapp._revisar_cambios_prog()` |
+| Tests | `test_bot.TestCronograma` |

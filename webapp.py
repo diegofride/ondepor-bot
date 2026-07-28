@@ -861,7 +861,9 @@ def _ejecutar_cambio_prog(rid):
 
 
 def _revisar_cambios_prog(reservas=None):
-    """Dispara los cambios de nombres programados cuando llega turno - 10 min.
+    """Dispara los cambios de nombres programados a su hora. Cada cambio puede traer su
+    propia hora (`ej_epoch`, la usa el cronograma: corre apenas se liberan los carnets
+    de los que entran); si no la trae, va al viejo default de turno - 10 min.
     'reservas' = lista ya cargada por el manager (evita releer el JSON en cada ciclo)."""
     ahora = hora_real()
     for rsv in (cargar("reservas.json", "reservas") if reservas is None else reservas):
@@ -876,7 +878,7 @@ def _revisar_cambios_prog(reservas=None):
                 f"{rsv['fecha']}T{rsv['hora_desde']}:00"))
         except (ValueError, TypeError):
             continue
-        if ahora < turno_epoch - CAMBIO_PROG_ANTES_SEG:
+        if ahora < (cp.get("ej_epoch") or turno_epoch - CAMBIO_PROG_ANTES_SEG):
             continue                       # todavía no es hora
         if ahora >= turno_epoch:           # el turno ya empezó y no corrió (¿app caída?): no cambiar
             _set_cambio_prog(rid, "vencido", "no se ejecutó a tiempo (el turno ya había empezado)")
@@ -2889,68 +2891,47 @@ def encuesta_borrar():
 
 
 # ======================================================================
-#  ARMADOR DE CRONOGRAMA: de los votos a las reservas programadas
-#  La lógica vive en encuesta.armar_cronograma(); acá está la pantalla
-#  para revisarlo y el botón que lo convierte en reservas de verdad.
+#  ARMADOR DE CRONOGRAMA: de los votos al flujo de reservas del finde
+#  La lógica vive en encuesta.armar_cronograma() (modelo explicado en
+#  ARMADOR_CRONOGRAMA.md): todas las reservas del sábado se hacen el
+#  viernes y las del domingo el sábado; los huecos se pisan con carnets
+#  prestados y los cambios corren apenas se liberan los que entran.
 # ======================================================================
-def _elecciones_de(datos, e):
-    """Qué horas se eligieron para cada día. Si el form todavía no se tocó devuelve
-    None, y el armador elige solo el horario más votado de cada día."""
-    if not datos.get("elegido"):
-        return None
-    horas_ok = set(e.get("horas", enc.HORAS_POR_DEFECTO))
-    return {str(d): [h for h in datos.getlist(f"h{d}") if h in horas_ok]
-            for d in e.get("dias", enc.DIAS_POR_DEFECTO)}
-
-
 def _plural(n, singular, plural):
     return f"{n} {singular if n == 1 else plural}"
 
 
-def _pinta_turno(t):
-    """Una tarjeta por turno con las canchas propuestas."""
-    anotados = _plural(len(t["anotados"]), "anotado", "anotados")
-    if not t["canchas"]:
-        avisos = "".join(f'<div class="nota warn">{icon("alert")} {esc(a)}</div>' for a in t["avisos"])
-        return f"""<div class="card">
-          <h2>{enc.DIAS[t['dia']]} {esc(t['hora'][:2])} h</h2>
-          <p><small class="hint">{anotados} · no da para reservar.</small></p>
-          {avisos}</div>"""
+def _apertura_pasada(rsv):
+    ap = (datetime.datetime.fromisoformat(f"{rsv['fecha']}T{rsv['hora']}:00")
+          - datetime.timedelta(minutes=24 * 60 - 1))
+    return ap <= ahora_ar()
 
-    canchas = ""
-    for i, c in enumerate(t["detalle"], 1):
-        tit = "".join(
-            f'<span class="pill {"programada" if x["prestado"] else "reservada"}">'
-            f'{esc(x["nombre"])}{" (prestado)" if x["prestado"] else ""}</span> '
-            for x in c["titulares"])
-        cambio = ""
-        if c["hay_cambio"]:
-            quienes = ", ".join(esc(x["nombre"]) for x in c["finales"])
-            cambio = (f'<div style="margin-top:6px"><small class="hint">↻ A las '
-                      f'{esc(t["cambio_hora"])} se cambian los nombres por: '
-                      f'<b>{quienes}</b></small></div>')
-        marca = "" if c["reservador"]["juega"] else ' <small class="hint">(no juega)</small>'
-        canchas += f"""<div class="reserva" style="margin-bottom:8px">
-          <div class="titulo"><span>Cancha {i}</span>
-            <span class="pill">{esc(c['reservador']['nombre'])} reserva{marca}</span></div>
-          <div class="meta">{tit}</div>{cambio}</div>"""
 
-    extras = ""
-    if t["rotan"]:
-        extras += (f'<div><small class="hint">Rotan: '
-                   f'{esc(", ".join(x["nombre"] for x in t["rotan"]))}</small></div>')
-    if t["sin_usar"]:
-        # la lista entera puede ser larguísima (18 nombres): interesa el número
-        libres = [x["nombre"] for x in t["sin_usar"]]
-        detalle_libres = (": " + esc(", ".join(libres))) if len(libres) <= 6 else ""
-        extras += (f'<div><small class="hint">Quedan '
-                   f'<b>{_plural(len(libres), "carnet libre", "carnets libres")}</b> '
-                   f'para el próximo turno{detalle_libres}</small></div>')
-    avisos = "".join(f'<div class="nota warn">{icon("alert")} {esc(a)}</div>' for a in t["avisos"])
-    return f"""<div class="card">
-      <h2>{enc.DIAS[t['dia']]} {esc(t['hora'][:2])} h · {_plural(t['canchas'], 'cancha', 'canchas')}</h2>
-      <p><small class="hint">{anotados} · se habilita el {esc(t['apertura'])}</small></p>
-      {canchas}{extras}{avisos}</div>"""
+def _tarjeta_reserva(rsv):
+    nombres = {x["id"]: x["nombre"] for x in rsv["juegan"] + rsv["titulares"]}
+    tit = "".join(
+        f'<span class="pill {"programada" if x["pisa"] else "reservada"}">'
+        f'{esc(x["nombre"])}{" (pisa)" if x["pisa"] else ""}</span> '
+        for x in rsv["titulares"])
+    lineas = ""
+    c = rsv.get("cambio")
+    if c:
+        entran = ", ".join(esc(nombres.get(p, p)) for p in c["entran"])
+        lineas += (f'<div style="margin-top:6px"><small class="hint">↻ Cambio el '
+                   f'<b>{esc(c["hora_txt"])}</b>: entran {entran} · la retoma '
+                   f'<b>{esc(c["reservador"])}</b></small></div>')
+    lineas += (f'<div><small class="hint">Juegan: '
+               f'{esc(", ".join(x["nombre"] for x in rsv["juegan"]))}'
+               + (f' · rotan: {esc(", ".join(x["nombre"] for x in rsv["rotan"]))}'
+                  if rsv["rotan"] else "") + '</small></div>')
+    for a in rsv["avisos"]:
+        lineas += f'<div class="nota warn">{icon("alert")} {esc(a)}</div>'
+    vencida = (' <span class="pill vencida">apertura pasada</span>'
+               if _apertura_pasada(rsv) else "")
+    return f"""<div class="reserva" style="margin-bottom:8px">
+      <div class="titulo"><span>{int(rsv['hora'][:2])} h · Cancha {rsv['cancha_num']}</span>
+        <span class="pill">{esc(rsv['reservador']['nombre'])} reserva</span>{vencida}</div>
+      <div class="meta">{tit}</div>{lineas}</div>"""
 
 
 @app.route("/encuesta/cronograma")
@@ -2960,128 +2941,129 @@ def encuesta_cronograma():
     if not e:
         flash("Primero abrí una encuesta.")
         return redirect(url_for("encuesta_panel"))
-    elecciones = _elecciones_de(request.args, e)
-    plan = enc.armar_cronograma(e, elecciones)
-    elegidas = {(str(t["dia"]), t["hora"]) for t in plan["turnos"]}
+    plan = enc.armar_cronograma(e)
 
-    # --- selector de horarios (con cuánta gente hay en cada uno) ---
-    selector = ""
-    for d in e.get("dias", enc.DIAS_POR_DEFECTO):
-        info = plan["resumen"]["por_dia"].get(d, {})
-        chips = ""
-        for h, ids in (info.get("por_hora_ids") or {}).items():
-            mar = " checked" if (str(d), h) in elegidas else ""
-            chips += (f'<label class="chip"><input type="checkbox" name="h{d}" value="{h}"{mar}'
-                      f' onchange="this.form.submit()"><span>{int(h[:2])} h '
-                      f'<b>({len(ids)})</b></span></label> ')
-        if not chips:
-            chips = '<small class="hint">Nadie se anotó este día.</small>'
-        selector += f'<div style="margin-bottom:10px"><b>{enc.DIAS[d]}</b><br>{chips}</div>'
+    bloques, orden = {}, []
+    for rsv in plan["reservas"]:
+        b = rsv["bloque"]
+        if b not in bloques:
+            bloques[b] = []
+            orden.append(b)
+        bloques[b].append(rsv)
+    cuerpo_bloques = "".join(
+        f'<div class="card"><h2>{esc(b)} · {_plural(len(bloques[b]), "cancha", "canchas")}</h2>'
+        f'<p><small class="hint">Se reserva a la apertura ({esc(bloques[b][0]["apertura_txt"])}).'
+        f'</small></p>{"".join(_tarjeta_reserva(r) for r in bloques[b])}</div>'
+        for b in orden) or ('<div class="card"><p><small class="hint">Con los votos '
+                            'cargados no sale ninguna cancha.</small></p></div>')
 
-    # si un reservador no se pudo vincular con su carnet, no se lo puede usar para
-    # disparar: conviene decirlo fuerte, porque se nota como "faltan canchas"
-    aviso_pid = ""
+    extras = ""
     if plan["sin_vincular"]:
-        quienes = ", ".join(esc(n) for n in plan["sin_vincular"])
-        aviso_pid = (f'<div class="nota warn" style="margin-top:10px">{icon("alert")} '
-                     f'No pude vincular con su carnet a: <b>{quienes}</b>. No se los puede usar '
-                     f'para reservar hasta que se arregle: en <a href="{url_for("jugadores")}">'
-                     f'Jugadores</a> tienen que figurar con el <b>mismo nombre</b> que en '
-                     f'Reservadores.</div>')
+        extras += (f'<div class="nota warn">{icon("alert")} Sin vincular con su carnet: '
+                   f'<b>{esc(", ".join(plan["sin_vincular"]))}</b> — en '
+                   f'<a href="{url_for("jugadores")}">Jugadores</a> tienen que figurar '
+                   f'con el mismo nombre que en Reservadores.</div>')
+    for a in plan["avisos"]:
+        extras += f'<div class="nota warn">{icon("alert")} {esc(a)}</div>'
+    if plan["sobran"]:
+        extras += (f'<div class="nota info">{icon("check")} Quedan sin usar '
+                   f'{_plural(len(plan["sobran"]), "carnet", "carnets")}: '
+                   f'{esc(", ".join(plan["sobran"]))}. Si hace falta, dan para ampliar '
+                   f'alguna mañana.</div>')
 
-    ocultos = "".join(
-        f'<input type="hidden" name="h{t["dia"]}" value="{esc(t["hora"])}">'
-        for t in plan["turnos"] if t["canchas"] and not t["tarde"])
-    n_canchas = sum(t["canchas"] for t in plan["turnos"] if not t["tarde"])
-
-    texto = _plural(n_canchas, "cancha", "canchas")
-    boton = ('<p><small class="hint">No hay ninguna cancha para programar.</small></p>'
-             if not n_canchas else f"""
+    roto = any("VERIFICACIÓN" in a for r in plan["reservas"] for a in r["avisos"])
+    n = len([r for r in plan["reservas"] if not _apertura_pasada(r)])
+    cambios = len([r for r in plan["reservas"]
+                   if r.get("cambio") and not _apertura_pasada(r)])
+    if roto:
+        boton = (f'<div class="nota err">{icon("alert")} La verificación encontró un '
+                 f'error en el plan: no se puede programar así.</div>')
+    elif not n:
+        boton = '<p><small class="hint">No hay ninguna cancha para programar.</small></p>'
+    else:
+        txt = _plural(n, "reserva", "reservas") + (
+            f" y {_plural(cambios, 'cambio de carnets', 'cambios de carnets')}"
+            if cambios else "")
+        boton = f"""
       <form method="post" action="{url_for('encuesta_cronograma_programar')}"
-            onsubmit="return confirm('¿Programar {texto} y sus cambios de nombres?')">
-        <input type="hidden" name="elegido" value="1">{ocultos}
-        <button>{icon('check')} Programar {texto}</button>
-      </form>""")
+            onsubmit="return confirm('¿Programar {txt}? Cada reserva se dispara sola a su apertura.')">
+        <button>{icon('check')} Programar {txt}</button>
+      </form>"""
 
     cuerpo = f"""
     <div class="card">
-      <h2>{icon('list')} Armar el cronograma</h2>
-      <p><small class="hint">Con lo que votaron, esto es lo que conviene reservar. Podés cambiar
-         los horarios y se rearma solo. Nada se programa hasta que toques el botón de abajo.</small></p>
-      <form method="get" action="{url_for('encuesta_cronograma')}">
-        <input type="hidden" name="elegido" value="1">
-        {selector}
-        <noscript><button class="sec">Recalcular</button></noscript>
-      </form>
-      {aviso_pid}
+      <h2>{icon('list')} Cronograma del finde</h2>
+      <p><small class="hint">Armado con los votos: las canchas se pisan con los carnets
+         prestados y los cambios corren solos apenas se libera el carnet de cada uno.
+         Nada se programa hasta que toques el botón de abajo.</small></p>
+      {extras}
     </div>
-    {"".join(_pinta_turno(t) for t in plan["turnos"])}
+    {cuerpo_bloques}
     <div class="card">
       {boton}
       <a class="btn sec" href="{url_for('encuesta_panel')}">Volver a la encuesta</a>
-    </div>
-    <style>
-    .chip{{display:inline-block;position:relative}}
-    .chip input{{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer}}
-    .chip span{{display:block;padding:7px 12px;border:1.5px solid var(--borde);border-radius:999px;
-      font-size:.9rem;margin:3px 0}}
-    .chip input:checked + span{{background:var(--ok);border-color:var(--ok);color:#fff}}
-    </style>"""
+    </div>"""
     return pagina("Cronograma", "encuesta", cuerpo)
 
 
 @app.route("/encuesta/cronograma/programar", methods=["POST"])
 @permiso_requerido("encuesta")
 def encuesta_cronograma_programar():
-    """Convierte la propuesta en reservas programadas de verdad (con su cambio de
-    nombres). Se rearma acá mismo para no confiar en lo que viaje por el form."""
+    """Convierte el plan en reservas programadas de verdad, cada una con su cambio de
+    carnets. Se rearma acá mismo para no confiar en lo que viaje por el form."""
     from werkzeug.datastructures import MultiDict
     e = enc.cargar_encuesta()
     if not e:
         return redirect(url_for("encuesta_panel"))
-    plan = enc.armar_cronograma(e, _elecciones_de(request.form, e))
+    plan = enc.armar_cronograma(e)
+    if any("VERIFICACIÓN" in a for r in plan["reservas"] for a in r["avisos"]):
+        flash("La verificación encontró un error en el plan: no se programó nada.")
+        return redirect(url_for("encuesta_cronograma"))
 
-    creadas, cambios, errores = 0, 0, []
-    for t in plan["turnos"]:
-        if not t["canchas"] or t["tarde"]:
+    creadas, cambios, tarde, errores = 0, 0, 0, []
+    for rsv in plan["reservas"]:
+        if _apertura_pasada(rsv):
+            tarde += 1
             continue
-        for c in t["detalle"]:
-            f = MultiDict([("sede", "dia" if t["club_id"] == enc.CLUB_DIA else "noche"),
-                           ("fecha", t["fecha"]), ("hora", t["hora"]),
-                           ("reservador", c["reservador"]["nombre"]), ("cancha", "")]
-                          + [("jug", x["id"]) for x in c["titulares"]])
-            try:
-                rid = _guardar_reserva_desde_form(f)
-            except Exception as ex:
-                errores.append(f"{enc.DIAS[t['dia']]} {t['hora']} "
-                               f"({c['reservador']['nombre']}): {ex}")
-                continue
-            creadas += 1
-            if c["hay_cambio"]:
-                _programar_cambio_del_cronograma(rid, t, c)
-                cambios += 1
+        f = MultiDict([("sede", SEDE_POR_CLUB.get(rsv["club_id"], "dia")),
+                       ("fecha", rsv["fecha"]), ("hora", rsv["hora"]),
+                       ("reservador", rsv["reservador"]["nombre"]), ("cancha", "")]
+                      + [("jug", x["id"]) for x in rsv["titulares"]])
+        try:
+            rid = _guardar_reserva_desde_form(f)
+        except Exception as ex:
+            errores.append(f"{rsv['bloque']} {rsv['hora']}: {ex}")
+            continue
+        creadas += 1
+        if rsv.get("cambio"):
+            _colgar_cambio_del_cronograma(rid, rsv["cambio"])
+            cambios += 1
 
     if creadas:
         flash(f"Listo: {creadas} reserva(s) programada(s)"
-              + (f" y {cambios} cambio(s) de nombres." if cambios else "."))
+              + (f" con {cambios} cambio(s) de carnets." if cambios else "."))
+    if tarde:
+        flash(f"{tarde} reserva(s) quedaron afuera: su apertura ya pasó.")
     if errores:
         flash("No pude programar: " + " · ".join(errores[:3]))
-    if not creadas and not errores:
+    if not creadas and not errores and not tarde:
         flash("No había nada para programar.")
     return redirect(url_for("reservas"))
 
 
-def _programar_cambio_del_cronograma(rid, t, c):
-    """Deja el cambio de nombres listo para que se ejecute 10 min antes del turno.
+def _colgar_cambio_del_cronograma(rid, c):
+    """Deja el cambio de carnets colgado de la reserva, con su hora propia (ej_epoch):
+    corre apenas se liberan los carnets de los que entran, no 10 min antes del turno.
     El ejecutor solo lo corre si para entonces la reserva está confirmada."""
     with rb._io_lock:
         lista = cargar("reservas.json", "reservas")
         for x in lista:
             if x.get("id") == rid:
                 x["cambio_prog"] = {
-                    "reservador": c["reservador"]["nombre"],
-                    "jugadores": [int(p["id"]) for p in c["finales"]],
-                    "estado": "pendiente", "detalle": "", "hora_ej": t["cambio_hora"],
+                    "reservador": c["reservador"],
+                    "jugadores": [int(p) for p in c["jugadores"]],
+                    "estado": "pendiente", "detalle": "",
+                    "hora_ej": c["hora_txt"], "ej_epoch": c["epoch"],
                     "creado_por": session.get("usuario", ""),
                 }
                 break
