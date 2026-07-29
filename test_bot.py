@@ -928,6 +928,35 @@ class TestCronograma(BaseApp):
             with self.web._estados_lock:
                 self.web._estados.pop("cp-test", None)
 
+    def test_programar_cambio_manual_con_minutos_elegidos(self):
+        """El form de 'Prog. cambio' deja elegir cuántos minutos antes del turno corre
+        el cambio (antes eran 10 fijos): tiene que guardar su ej_epoch propio."""
+        manana = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+        self._W("reservas.json", {"reservas": [{
+            "id": "mc-1", "club_id": 1102, "cancha": "", "fecha": manana,
+            "hora_desde": "15:00", "hora_hasta": "16:00", "single_double": 2,
+            "reservador": "Ana", "jugadores": [self.pid["Beto"], self.pid["Carla"],
+                                               self.pid["Elena"]],
+            "creado_por": "Diego"}]})
+        with self.web._estados_lock:
+            self.web._estados["mc-1"] = {"estado": "reservada"}
+        try:
+            r = self.cliente().post("/reservas/programar-cambio", data={
+                "programar_id": "mc-1", "reservador": "Ana", "min_antes": "45",
+                "jug": [str(self.pid["Fabio"]), str(self.pid["Gaby"]),
+                        str(self.pid["Hugo"])]}, follow_redirects=True)
+            self.assertEqual(r.status_code, 200)
+            rsv = self.web.cargar("reservas.json", "reservas")[0]
+            cp = rsv.get("cambio_prog")
+            self.assertTrue(cp, "no quedó programado")
+            turno = self.core._epoch_ar(
+                datetime.datetime.fromisoformat(f"{manana}T15:00:00"))
+            self.assertEqual(cp["ej_epoch"], turno - 45 * 60)
+            self.assertEqual(cp["hora_ej"], "14:15")
+        finally:
+            with self.web._estados_lock:
+                self.web._estados.pop("mc-1", None)
+
     def test_sin_permiso_no_se_programa(self):
         import encuesta as enc
         self._encuesta({n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]}}

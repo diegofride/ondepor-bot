@@ -1715,7 +1715,7 @@ def reservas():
     if modo_cambiar:
         tit = "Cambiar jugadores (reserva confirmada)"
     elif modo_programar:
-        tit = "Programar cambio de nombres (se hace solo 10 min antes del turno)"
+        tit = "Programar cambio de nombres (se hace solo, antes del turno)"
     elif editando:
         tit = "Editar reserva"
     else:
@@ -1752,23 +1752,48 @@ def reservas():
           la toma su cuenta.
         </small></div>"""
     if modo_programar:
+        # minutos antes del turno: editable; si se está editando un cambio ya
+        # programado, se precargan LOS SUYOS (derivados de su ej_epoch)
+        min_ini = CAMBIO_PROG_ANTES_SEG // 60
+        turno_min_dia = 0
         try:
-            hora_ej_form = (datetime.datetime.fromisoformat(
+            turno_dt = datetime.datetime.fromisoformat(
                 f"{reserva_ed['fecha']}T{reserva_ed['hora_desde']}:00")
-                - datetime.timedelta(seconds=CAMBIO_PROG_ANTES_SEG)).strftime("%H:%M")
+            turno_min_dia = turno_dt.hour * 60 + turno_dt.minute
+            if cp_ed and cp_ed.get("ej_epoch"):
+                min_ini = max(1, round((_epoch_ar(turno_dt) - cp_ed["ej_epoch"]) / 60))
         except (ValueError, TypeError, KeyError):
-            hora_ej_form = "?"
+            pass
         bloque_botones = f"""
+        <div class="row" style="align-items:flex-end">
+          <div style="flex:0 0 150px"><label>Minutos antes</label>
+            <input type="number" name="min_antes" id="minAntes" value="{min_ini}"
+                   min="1" max="1380" oninput="pintaHoraEj()"></div>
+          <div style="align-self:center;padding-bottom:12px"><small class="hint">
+            se ejecuta a las <b id="horaEj">…</b></small></div>
+        </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-          <button class="dark js-loader" formaction="{url_for('reserva_programar_cambio')}">{icon('clock')} Programar cambio (se hace a las {hora_ej_form})</button>
+          <button class="dark js-loader" formaction="{url_for('reserva_programar_cambio')}">{icon('clock')} Programar cambio</button>
           {cancelar_ed}
         </div>
         <div style="margin-top:10px"><small class="hint">
-          El cambio <b>NO se hace ahora</b>: queda agendado y el bot lo ejecuta solo <b>10 minutos antes
-          del turno</b> (a las <b>{hora_ej_form}</b>): cancela y vuelve a tomar la misma cancha con los
-          nombres nuevos; si no entra, recupera la reserva original. Podés editarlo o anularlo desde la
-          lista hasta ese momento.
-        </small></div>"""
+          El cambio <b>NO se hace ahora</b>: queda agendado y el bot lo ejecuta solo, los minutos que
+          elijas antes del turno: cancela y vuelve a tomar la misma cancha con los nombres nuevos; si
+          no entra, recupera la reserva original. Podés editarlo o anularlo desde la lista hasta ese
+          momento.
+        </small></div>
+        <script>
+        function pintaHoraEj(){{
+          var v = parseInt(document.getElementById('minAntes').value || '0', 10);
+          var el = document.getElementById('horaEj');
+          if (!v || v < 1) {{ el.textContent = '…'; return; }}
+          var t = {turno_min_dia} - v, vispera = '';
+          if (t < 0) {{ t += 1440; vispera = ' (el día anterior)'; }}
+          var hh = ('0' + Math.floor(t / 60)).slice(-2), mm = ('0' + (t % 60)).slice(-2);
+          el.textContent = hh + ':' + mm + vispera;
+        }}
+        document.addEventListener('DOMContentLoaded', pintaHoraEj);
+        </script>"""
 
     # ---- JS (string aparte para no chocar con las llaves del f-string) ----
     script_block = """
@@ -2190,26 +2215,39 @@ def reserva_programar_cambio():
     if err:
         return err
     rid = rsv["id"]
+    # cuántos minutos antes del turno corre el cambio (el usuario lo elige; tope
+    # 23 h porque antes de la apertura la reserva ni siquiera existe)
+    try:
+        min_antes = int(request.form.get("min_antes", "").strip() or CAMBIO_PROG_ANTES_SEG // 60)
+    except ValueError:
+        min_antes = CAMBIO_PROG_ANTES_SEG // 60
+    min_antes = max(1, min(23 * 60, min_antes))
     try:
         turno = datetime.datetime.fromisoformat(f"{rsv['fecha']}T{rsv['hora_desde']}:00")
-        ej_epoch = _epoch_ar(turno) - CAMBIO_PROG_ANTES_SEG
-        hora_ej = (turno - datetime.timedelta(seconds=CAMBIO_PROG_ANTES_SEG)).strftime("%H:%M")
+        ej_dt = turno - datetime.timedelta(minutes=min_antes)
+        ej_epoch = _epoch_ar(ej_dt)
+        hora_ej = ej_dt.strftime("%H:%M")
+        if ej_dt.date() != turno.date():
+            hora_ej = enc.DIAS[ej_dt.weekday()][:3].lower() + " " + hora_ej
     except (ValueError, TypeError):
         flash("La reserva tiene fecha u hora inválida.")
         return redirect(url_for("reservas"))
     if hora_real() >= ej_epoch:
-        flash("Faltan menos de 10 minutos para el turno: usá 'Cambiar jugadores' directo.")
-        return redirect(url_for("reservas") + "?cambiar=" + rid)
+        flash(f"Esa hora ya pasó (eran las {hora_ej}): elegí menos minutos o usá "
+              f"'Cambiar jugadores' directo.")
+        return redirect(url_for("reservas") + "?programar=" + rid)
     with rb._io_lock:
         lista = cargar("reservas.json", "reservas")
         for x in lista:
             if x.get("id") == rid:
                 x["cambio_prog"] = {"reservador": nuevo_nombre, "jugadores": nuevos,
                                     "estado": "pendiente", "detalle": "", "hora_ej": hora_ej,
+                                    "ej_epoch": ej_epoch,
                                     "creado_por": session.get("usuario", "")}
                 break
         guardar("reservas.json", "reservas", lista)
-    flash(f"Cambio de nombres programado: se ejecuta solo a las {hora_ej} (10 min antes del turno).")
+    flash(f"Cambio de nombres programado: se ejecuta solo a las {hora_ej} "
+          f"({min_antes} min antes del turno).")
     return redirect(url_for("reservas"))
 
 
