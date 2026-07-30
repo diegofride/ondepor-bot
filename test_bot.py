@@ -677,6 +677,34 @@ class TestEncuesta(BaseApp):
         self.assertEqual(v["dias"]["5"]["modo"], enc.MODO_PRESTA)
         self.assertEqual(v["dias"]["6"]["modo"], enc.MODO_NO)
 
+    def test_el_voto_vale_solo_completo(self):
+        """Pedido de Diego: para votar hay que contestar TODOS los días (sábado Y
+        domingo), aunque sea 'no cuenten conmigo'. Un voto a medias no se guarda."""
+        import encuesta as enc
+        todos = enc.todos_los_jugadores()
+        pid = todos[0]["id"]
+        self._abrir([pid])
+        e = enc.cargar_encuesta()
+        c = self.web.app.test_client()
+        c.get(f"/e/{e['token']}/soy/{pid}", follow_redirects=True)
+
+        # solo contesta el sábado: NO se guarda y vuelve con el aviso
+        r = c.post(f"/e/{e['token']}/votar", data={"m5": enc.MODO_PRESTA},
+                   follow_redirects=True)
+        self.assertNotIn(pid, enc.votos_de(e["id"]))
+        self.assertIn("no se guardó", r.get_data(as_text=True))
+
+        # dice "juego" el domingo pero sin marcar horario: tampoco
+        c.post(f"/e/{e['token']}/votar",
+               data={"m5": enc.MODO_NO, "m6": enc.MODO_JUEGO}, follow_redirects=True)
+        self.assertNotIn(pid, enc.votos_de(e["id"]))
+
+        # completo: ahora sí
+        c.post(f"/e/{e['token']}/votar",
+               data={"m5": enc.MODO_NO, "m6": enc.MODO_JUEGO, "h6": ["10:00"]},
+               follow_redirects=True)
+        self.assertIn(pid, enc.votos_de(e["id"]))
+
     def test_bolsa_de_carnets_junta_las_tres_fuentes(self):
         """La bolsa = los que juegan + los que prestan en la encuesta + los prestados
         por gente de AFUERA. Sin duplicar a quien está en más de una."""

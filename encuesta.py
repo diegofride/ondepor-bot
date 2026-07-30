@@ -258,12 +258,24 @@ def ver(token):
         </div>"""
 
     dias_html = "".join(bloque(d) for d in e.get("dias", DIAS_POR_DEFECTO))
+    # backstop del server: si el POST vino incompleto, votar() redirige acá con ?falta=1
+    aviso_falta = ""
+    if request.args.get("falta"):
+        aviso_falta = ('<div class="falta" style="display:block">Tu respuesta no se guardó: '
+                       'hay que contestar TODOS los días (aunque sea "no cuenten conmigo").</div>')
+    dias_js = json.dumps([[d, DIAS[d]] for d in e.get("dias", DIAS_POR_DEFECTO)],
+                         ensure_ascii=False)
     cuerpo = f"""
+    <style>.falta{{display:none;background:#fde8e8;border:1px solid #f5b5b5;color:#b42318;
+      border-radius:10px;padding:10px 12px;font-size:.9rem;margin-bottom:10px}}</style>
     <div class="hola"><span>Hola, <b>{escape(yo["nombre"])}</b>
       {"· ya votaste, podés cambiarlo" if voto else ""}</span>
       <a href="{url_for("encuesta.no_soy", token=token)}">no soy yo</a></div>
-    <form method="post" action="{url_for("encuesta.votar", token=token)}">
+    {aviso_falta}
+    <form method="post" action="{url_for("encuesta.votar", token=token)}"
+          onsubmit="return validar()">
       {dias_html}
+      <div id="avisoFalta" class="falta"></div>
       <button>{"Actualizar mi respuesta" if voto else "Listo, enviar"}</button>
     </form>
     <script>
@@ -276,6 +288,26 @@ def ver(token):
       document.querySelectorAll('.op').forEach(function(l){{
         l.classList.toggle('sel', !!l.querySelector('input:checked'));
       }});
+    }}
+    function validar(){{
+      var faltan = [];
+      {dias_js}.forEach(function(par){{
+        var d = par[0], nom = par[1];
+        var r = document.querySelector('input[name=m'+d+']:checked');
+        if(!r) faltan.push(nom);
+        else if(r.value === '{MODO_JUEGO}'
+                && !document.querySelector('input[name=h'+d+']:checked'))
+          faltan.push(nom + ' (marca al menos un horario)');
+      }});
+      var av = document.getElementById('avisoFalta');
+      if(faltan.length){{
+        av.textContent = 'Para enviar hay que contestar todos los dias. Falta: '
+                         + faltan.join(' y ') + '.';
+        av.style.display = 'block';
+        av.scrollIntoView({{behavior:'smooth', block:'center'}});
+        return false;
+      }}
+      return true;
     }}
     document.addEventListener('DOMContentLoaded', function(){{
       {" ".join("pintar(%d);" % d for d in e.get("dias", DIAS_POR_DEFECTO))}
@@ -312,18 +344,26 @@ def votar(token):
         return redirect(url_for("encuesta.ver", token=token))
 
     dias = {}
+    incompleto = False
     for d in e.get("dias", DIAS_POR_DEFECTO):
         modo = request.form.get(f"m{d}", "")
         if modo not in (MODO_JUEGO, MODO_PRESTA, MODO_NO):
-            continue                                   # no contestó ese día
+            incompleto = True                          # no contestó ese día
+            continue
         entrada = {"modo": modo}
         if modo == MODO_JUEGO:
             horas = [h for h in request.form.getlist(f"h{d}")
                      if h in e.get("horas", HORAS_POR_DEFECTO)]
             if not horas:                              # dijo "juego" pero no marcó hora
+                incompleto = True
                 continue
             entrada["horas"] = sorted(horas)
         dias[str(d)] = entrada
+    if incompleto:
+        # la respuesta vale solo COMPLETA (pedido de Diego): hay que contestar TODOS
+        # los días, aunque sea "no cuenten conmigo". El JS ya lo frena en el celular;
+        # esto es el backstop del server y no guarda nada.
+        return redirect(url_for("encuesta.ver", token=token, falta=1))
     guardar_voto(e["id"], pid, {
         "nombre": yo["nombre"],
         "dias": dias,
