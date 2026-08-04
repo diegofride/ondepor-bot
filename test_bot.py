@@ -507,6 +507,43 @@ class TestRoles(BaseApp):
             follow_redirects=True)
         self.assertNotIn("No tenés permiso", r.get_data(as_text=True))
 
+    def test_jugador_programa_cambios_solo_de_sus_reservas(self):
+        """Pedido de Diego: el rol Jugador puede programar el cambio de carnets de
+        SUS reservas (las que creó), pero no de las ajenas."""
+        manana = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+        base = {"club_id": 1102, "cancha": "", "hora_hasta": "16:00", "single_double": 2,
+                "reservador": "Diego Fride", "jugadores": [253510, 130962, 304064]}
+        with open(os.path.join(self.tmp, "reservas.json"), "w", encoding="utf-8") as f:
+            json.dump({"reservas": [
+                dict(base, id="mia", fecha=manana, hora_desde="15:00", creado_por="Pablo"),
+                dict(base, id="ajena", fecha=manana, hora_desde="16:00", creado_por="Diego"),
+            ]}, f)
+        with self.web._estados_lock:
+            self.web._estados["mia"] = {"estado": "reservada"}
+            self.web._estados["ajena"] = {"estado": "reservada"}
+        try:
+            c = self.cliente("pablo", "clave2")           # rol jugador
+            datos = {"reservador": "Diego Fride", "min_antes": "30",
+                     "jug": ["253510", "130962", "304064"]}
+            c.post("/reservas/programar-cambio",
+                   data=dict(datos, programar_id="mia"), follow_redirects=True)
+            r = c.post("/reservas/programar-cambio",
+                       data=dict(datos, programar_id="ajena"), follow_redirects=True)
+            reservas = {x["id"]: x for x in self.web.cargar("reservas.json", "reservas")}
+            self.assertTrue(reservas["mia"].get("cambio_prog"),
+                            "la suya tenía que quedar programada")
+            self.assertFalse(reservas["ajena"].get("cambio_prog"),
+                             "la ajena no la puede tocar")
+            self.assertIn("quien creó la reserva", r.get_data(as_text=True))
+            # y también puede anular el cambio de la suya
+            c.post("/reservas/cambio-prog-borrar/mia", follow_redirects=True)
+            reservas = {x["id"]: x for x in self.web.cargar("reservas.json", "reservas")}
+            self.assertFalse(reservas["mia"].get("cambio_prog"))
+        finally:
+            with self.web._estados_lock:
+                self.web._estados.pop("mia", None)
+                self.web._estados.pop("ajena", None)
+
     def test_encuesta_solo_con_permiso(self):
         import encuesta as enc
         pid = enc.todos_los_jugadores()[0]["id"]

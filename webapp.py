@@ -164,7 +164,7 @@ def rate_ok(clave, maximo, ventana_seg, contar=True):
 PERMISOS = {
     "usuarios":        "Administrar usuarios del panel",
     "todas_reservas":  "Ver y borrar reservas de todos (no solo las propias)",
-    "cambiar_ondepor": "Cambiar jugadores de una reserva ya confirmada",
+    "cambiar_ondepor": "Cambiar jugadores de CUALQUIER reserva confirmada (las que creó cada uno las cambia siempre)",
     "agregar_jugadores": "Agregar jugadores nuevos a la base",
     "gestionar_bases": "Editar y borrar jugadores y reservadores",
     "encuesta":        "Abrir y cerrar la encuesta semanal del grupo",
@@ -959,6 +959,15 @@ def admin_requerido(f):
     return permiso_requerido("usuarios")(f)
 
 
+def puede_cambiar_reserva(rsv):
+    """El cambio de carnets de una reserva confirmada lo puede hacer quien tenga el
+    permiso general (cambiar_ondepor) O el usuario que la creó — pedido de Diego:
+    los jugadores manejan los cambios de SUS reservas."""
+    return puede("cambiar_ondepor") or bool(
+        rsv and rsv.get("creado_por")
+        and rsv.get("creado_por") == session.get("usuario"))
+
+
 # ----------------------------------------------------------------------
 #  Plantillas  (el CSS vive en static/estilo.css, servido por Flask)
 # ----------------------------------------------------------------------
@@ -1508,7 +1517,9 @@ def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False):
     acomp = [x["nombre"] for x in j.get("jugadores_full", [])] + [str(f) for f in j.get("faltan_jugadores", [])]
     acomp_txt = ", ".join(acomp) if acomp else "sin acompañantes"
     # OJO: no llamar "puede" a una variable local, tapa la función puede() de permisos
-    puede_ondepor = puede("cambiar_ondepor")      # cambiar/programar jugadores en OnDepor
+    # cambiar/programar jugadores en OnDepor: permiso general O ser el creador de ESTA
+    puede_ondepor = puede("cambiar_ondepor") or bool(
+        creador and creador == session.get("usuario"))
     es_suya = puede("todas_reservas") or (creador and creador == session.get("usuario"))
 
     # chip de estado (ícono + etiqueta amable)
@@ -1627,10 +1638,16 @@ def reservas():
     creado_map = {r.get("id"): r.get("creado_por", "") for r in reservas_raw}
 
     # ¿estamos editando (?editar=), cambiando jugadores YA (?cambiar=) o programando un
-    # cambio de nombres para 10 min antes del turno (?programar=)? (los últimos 2, solo admin)
+    # cambio de nombres programado (?programar=) o inmediato (?cambiar=): lo puede
+    # abrir quien tenga el permiso general o el creador de ESA reserva
     editar_id = request.args.get("editar", "")
-    cambiar_id = request.args.get("cambiar", "") if puede("cambiar_ondepor") else ""
-    programar_id = request.args.get("programar", "") if puede("cambiar_ondepor") else ""
+    cambiar_id = request.args.get("cambiar", "")
+    programar_id = request.args.get("programar", "")
+    if cambiar_id or programar_id:
+        _obj = next((r for r in reservas_raw
+                     if r.get("id") == (cambiar_id or programar_id)), None)
+        if not puede_cambiar_reserva(_obj):
+            cambiar_id = programar_id = ""
     modo_cambiar = bool(cambiar_id)
     modo_programar = bool(programar_id) and not modo_cambiar
     foco_id = cambiar_id or programar_id or editar_id
@@ -2166,6 +2183,10 @@ def _validar_cambio_form(form, arg_retorno):
     if not rsv:
         flash("No encontré esa reserva.")
         return None, None, None, redirect(url_for("reservas"))
+    if not puede_cambiar_reserva(rsv):
+        flash("Los cambios de carnets los puede hacer quien creó la reserva "
+              "(o quien tenga el permiso general).")
+        return None, None, None, redirect(url_for("reservas"))
     if get_estado(rid) != "reservada":
         flash("Solo se pueden cambiar jugadores de una reserva ya confirmada.")
         return None, None, None, redirect(url_for("reservas"))
@@ -2189,7 +2210,7 @@ def _validar_cambio_form(form, arg_retorno):
 
 
 @app.route("/reservas/cambiar-jugadores", methods=["POST"])
-@permiso_requerido("cambiar_ondepor")
+@login_requerido
 def reserva_cambiar_jugadores():
     rsv, nuevos, nuevo_nombre, err = _validar_cambio_form(request.form, "cambiar")
     if err:
@@ -2209,7 +2230,7 @@ def reserva_cambiar_jugadores():
 
 
 @app.route("/reservas/programar-cambio", methods=["POST"])
-@permiso_requerido("cambiar_ondepor")
+@login_requerido
 def reserva_programar_cambio():
     rsv, nuevos, nuevo_nombre, err = _validar_cambio_form(request.form, "programar")
     if err:
@@ -2252,11 +2273,14 @@ def reserva_programar_cambio():
 
 
 @app.route("/reservas/cambio-prog-borrar/<rid>", methods=["POST"])
-@permiso_requerido("cambiar_ondepor")
+@login_requerido
 def cambio_prog_borrar(rid):
     with rb._io_lock:
         lista = cargar("reservas.json", "reservas")
         obj = next((x for x in lista if x.get("id") == rid), None)
+        if obj and not puede_cambiar_reserva(obj):
+            flash("Los cambios de carnets los maneja quien creó la reserva.")
+            return redirect(url_for("reservas"))
         if obj and obj.pop("cambio_prog", None) is not None:
             guardar("reservas.json", "reservas", lista)
             flash("Cambio programado anulado: quedan los nombres actuales.")
