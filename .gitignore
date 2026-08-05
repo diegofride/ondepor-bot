@@ -47,3 +47,5 @@ Thumbs.db
 
 # volcado de código para compartir (se regenera cuando hace falta)
 CODIGO_RESERVAME_ESTA.txt
+# huellas registradas (claves publicas WebAuthn de cada usuario)
+passkeys.json

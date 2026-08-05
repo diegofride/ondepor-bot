@@ -17,6 +17,7 @@ Arranque:    python webapp.py     (y abrís http://localhost:8080)
 """
 import os
 import re
+import base64
 import json
 import time
 import shutil
@@ -317,6 +318,7 @@ def _css_ver():
 # ---- Íconos de línea (SVG inline, sin dependencias externas; heredan color y tamaño) ----
 _ICON_PATHS = {
     "sun": '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/>',
+    "huella": '<path d="M12 11a3 3 0 0 0-3 3c0 2.4-.4 4.4-1.2 6"/><path d="M12 11a3 3 0 0 1 3 3c0 3-.3 5.2-.9 7"/><path d="M6.5 8.8A7 7 0 0 1 19 14c0 2-.2 4-.5 5.5"/><path d="M5.2 12.5A7 7 0 0 0 5 14c0 1.6-.2 3.2-.6 4.5"/><path d="M8.7 5.1A7 7 0 0 1 15.4 5"/>',
     "moon": '<path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/>',
     "bolt": '<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/>',
     "clock": '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
@@ -1053,6 +1055,7 @@ BASE = """<!doctype html><html lang="es"><head><meta charset="utf-8">
   </nav>
   <span class="sp"></span>
   <span class="quien">{{ ic('user')|safe }} {{session.get('usuario','')}}</span>
+  <a class="salir" href="{{url_for('huella')}}" title="Entrar con huella: activar este dispositivo">{{ ic('huella')|safe }}</a>
   <a class="salir" href="{{url_for('logout')}}">{{ ic('logout')|safe }} Salir</a>
 </header>
 <div class="wrap">
@@ -1085,6 +1088,29 @@ LOGIN_HTML = """<!doctype html><html lang="es"><head><meta charset="utf-8">
         <div style="height:16px"></div>
         <button style="width:100%">{{ ic('login')|safe }} Entrar</button>
       </form>
+      <div id="pkZona" style="display:none;margin-top:10px">
+        <button type="button" class="sec" style="width:100%" onclick="pkEntrar(this)">
+          {{ ic('huella')|safe }} Entrar con huella</button>
+        <div id="pkMsg" style="margin-top:6px;font-size:.85rem;color:#b42318"></div>
+      </div>
+      <script src="/static/passkeys.js?v=1"></script>
+      <script>
+      (function(){
+        if (window.Passkeys && Passkeys.soportado() && Passkeys.activadaAca())
+          document.getElementById('pkZona').style.display = 'block';
+      })();
+      async function pkEntrar(b){
+        var m = document.getElementById('pkMsg');
+        m.textContent = ''; b.disabled = true;
+        try {
+          await Passkeys.entrar();
+          location.href = '{{ url_for("reservas") }}';
+        } catch(e) {
+          m.textContent = Passkeys.traducir(e);
+          b.disabled = false;
+        }
+      }
+      </script>
     </div>
   </div>
 </div>""" + SW_REG + """</body></html>"""
@@ -1269,6 +1295,284 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+
+# ======================================================================
+#  HUELLA / Windows Hello (WebAuthn) — mismo esquema que el Jalomi Manager:
+#  la contraseña NO se toca (la huella es un atajo extra), la clave privada
+#  nunca sale del dispositivo (el server guarda solo la pública) y el
+#  challenge viaja en una cookie FIRMADA de vida corta (sobrevive a un
+#  reinicio y no necesita estado en memoria). Credenciales en passkeys.json.
+# ======================================================================
+try:
+    from webauthn import (generate_authentication_options, generate_registration_options,
+                          options_to_json, verify_authentication_response,
+                          verify_registration_response)
+    from webauthn.helpers.structs import (AuthenticatorSelectionCriteria,
+                                          PublicKeyCredentialDescriptor,
+                                          ResidentKeyRequirement,
+                                          UserVerificationRequirement)
+    _HUELLA_LIB = True
+except ImportError:                    # sin la lib, el panel sigue andando sin huella
+    _HUELLA_LIB = False
+
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+
+_RETO_COOKIE = "reservame_wa_reto"
+_RETO_SEG = 300
+_reto_ser = URLSafeTimedSerializer(app.secret_key, salt="reservame-webauthn")
+
+
+def _b64u(datos):
+    return base64.urlsafe_b64encode(datos).decode().rstrip("=")
+
+
+def _de_b64u(txt):
+    return base64.urlsafe_b64decode(txt + "=" * (-len(txt) % 4))
+
+
+def _wa_rp_id():
+    """Dominio para el que vale la passkey: el host SIN puerto (lo exige el estándar)."""
+    return request.host.split(":")[0]
+
+
+def _wa_origen():
+    return request.url_root.rstrip("/")
+
+
+def _wa_error(msg, codigo=400):
+    return jsonify({"detail": msg}), codigo
+
+
+def _wa_guardar_reto(resp, reto, usuario=None):
+    resp.set_cookie(_RETO_COOKIE, _reto_ser.dumps({"reto": _b64u(reto), "u": usuario}),
+                    max_age=_RETO_SEG, httponly=True, samesite="Lax",
+                    secure=app.config.get("SESSION_COOKIE_SECURE", True))
+    return resp
+
+
+def _wa_leer_reto():
+    raw = request.cookies.get(_RETO_COOKIE, "")
+    try:
+        data = _reto_ser.loads(raw, max_age=_RETO_SEG)
+        return _de_b64u(data["reto"])
+    except (BadSignature, SignatureExpired, KeyError, TypeError):
+        return None
+
+
+def _wa_dispositivo():
+    ua = (request.headers.get("User-Agent") or "").lower()
+    if "android" in ua:
+        return "Celular Android"
+    if "iphone" in ua or "ipad" in ua:
+        return "iPhone/iPad"
+    if "windows" in ua:
+        return "PC Windows"
+    if "mac" in ua:
+        return "Mac"
+    return "Dispositivo"
+
+
+def _usuario_logueado():
+    """El registro de usuarios.json del que está en la sesión (la sesión guarda el
+    NOMBRE visible, no el usuario de login)."""
+    ses = session.get("usuario", "")
+    return next((u for u in cargar_usuarios()
+                 if (u.get("nombre") or u.get("usuario")) == ses), None)
+
+
+# ---------- registrar la huella (hay que estar logueado) ----------
+@app.route("/passkeys/registro/opciones", methods=["POST"])
+@login_requerido
+def passkey_registro_opciones():
+    if not _HUELLA_LIB:
+        return _wa_error("El server no tiene instalada la librería de huella.")
+    u = _usuario_logueado()
+    if not u:
+        return _wa_error("No encuentro tu usuario.", 401)
+    ya = [p for p in cargar("passkeys.json", "passkeys")
+          if p.get("usuario") == u.get("usuario")]
+    op = generate_registration_options(
+        rp_id=_wa_rp_id(), rp_name="Reservame ésta!",
+        user_id=str(u["usuario"]).encode(), user_name=str(u["usuario"]),
+        user_display_name=u.get("nombre") or str(u["usuario"]),
+        # la passkey queda EN el dispositivo y pide huella/PIN para usarse
+        authenticator_selection=AuthenticatorSelectionCriteria(
+            resident_key=ResidentKeyRequirement.PREFERRED,
+            user_verification=UserVerificationRequirement.REQUIRED),
+        exclude_credentials=[PublicKeyCredentialDescriptor(id=_de_b64u(p["credential_id"]))
+                             for p in ya])
+    resp = app.response_class(options_to_json(op), mimetype="application/json")
+    return _wa_guardar_reto(resp, op.challenge, str(u["usuario"]))
+
+
+@app.route("/passkeys/registro/verificar", methods=["POST"])
+@login_requerido
+def passkey_registro_verificar():
+    if not _HUELLA_LIB:
+        return _wa_error("El server no tiene instalada la librería de huella.")
+    u = _usuario_logueado()
+    reto = _wa_leer_reto()
+    if not u or not reto:
+        return _wa_error("Se venció el pedido: probá de nuevo.")
+    try:
+        v = verify_registration_response(
+            credential=request.get_json(force=True), expected_challenge=reto,
+            expected_rp_id=_wa_rp_id(), expected_origin=_wa_origen())
+    except Exception as e:
+        return _wa_error(f"No se pudo registrar la huella: {str(e)[:150]}")
+    cid = _b64u(v.credential_id)
+    with rb._io_lock:
+        lista = cargar("passkeys.json", "passkeys")
+        if not any(p.get("credential_id") == cid for p in lista):
+            lista.append({"usuario": str(u["usuario"]), "credential_id": cid,
+                          "public_key": _b64u(v.credential_public_key),
+                          "sign_count": v.sign_count or 0,
+                          "dispositivo": _wa_dispositivo(),
+                          "creado": ahora_ar().strftime("%Y-%m-%d %H:%M"),
+                          "ultimo_uso": ""})
+            guardar("passkeys.json", "passkeys", lista,
+                    ayuda="Huellas (WebAuthn): solo claves PÚBLICAS, la privada vive en cada aparato.")
+    resp = jsonify({"ok": True, "dispositivo": _wa_dispositivo()})
+    resp.delete_cookie(_RETO_COOKIE)
+    return resp
+
+
+# ---------- entrar con la huella (sin sesión) ----------
+@app.route("/passkeys/login/opciones", methods=["POST"])
+def passkey_login_opciones():
+    if not _HUELLA_LIB:
+        return _wa_error("El server no tiene instalada la librería de huella.")
+    op = generate_authentication_options(
+        rp_id=_wa_rp_id(), user_verification=UserVerificationRequirement.REQUIRED)
+    resp = app.response_class(options_to_json(op), mimetype="application/json")
+    return _wa_guardar_reto(resp, op.challenge)
+
+
+@app.route("/passkeys/login/verificar", methods=["POST"])
+def passkey_login_verificar():
+    if not _HUELLA_LIB:
+        return _wa_error("El server no tiene instalada la librería de huella.")
+    clave_rl = "huella:" + (request.remote_addr or "?")
+    if not rate_ok(clave_rl, maximo=15, ventana_seg=300, contar=False):
+        return _wa_error("Demasiados intentos. Esperá unos minutos.", 429)
+    reto = _wa_leer_reto()
+    if not reto:
+        return _wa_error("Se venció el pedido: probá de nuevo.")
+    credencial = request.get_json(force=True, silent=True) or {}
+    cid = credencial.get("id") or ""
+    pk = next((p for p in cargar("passkeys.json", "passkeys")
+               if p.get("credential_id") == cid), None)
+    if pk is None:
+        rate_ok(clave_rl, maximo=15, ventana_seg=300)
+        return _wa_error("Esta huella no está registrada en el sistema.", 401)
+    u = next((x for x in cargar_usuarios()
+              if str(x.get("usuario", "")) == pk.get("usuario")), None)
+    if u is None:
+        return _wa_error("El usuario de esta huella ya no existe.", 401)
+    try:
+        v = verify_authentication_response(
+            credential=credencial, expected_challenge=reto,
+            expected_rp_id=_wa_rp_id(), expected_origin=_wa_origen(),
+            credential_public_key=_de_b64u(pk["public_key"]),
+            credential_current_sign_count=pk.get("sign_count", 0),
+            require_user_verification=True)
+    except Exception as e:
+        rate_ok(clave_rl, maximo=15, ventana_seg=300)
+        return _wa_error(f"No se pudo verificar la huella: {str(e)[:150]}", 401)
+    with rb._io_lock:
+        lista = cargar("passkeys.json", "passkeys")
+        for p in lista:
+            if p.get("credential_id") == cid:
+                p["sign_count"] = v.new_sign_count
+                p["ultimo_uso"] = ahora_ar().strftime("%Y-%m-%d %H:%M")
+        guardar("passkeys.json", "passkeys", lista)
+    # misma sesión que el login con contraseña
+    session.permanent = True
+    session["ok"] = True
+    session["usuario"] = u.get("nombre") or u.get("usuario")
+    session["rol"] = rol_de(u)
+    session["admin"] = puede_rol(session["rol"], "usuarios")
+    resp = jsonify({"ok": True})
+    resp.delete_cookie(_RETO_COOKIE)
+    return resp
+
+
+# ---------- pantalla para activar/administrar la huella ----------
+@app.route("/huella")
+@login_requerido
+def huella():
+    u = _usuario_logueado()
+    mias = [p for p in cargar("passkeys.json", "passkeys")
+            if u and p.get("usuario") == u.get("usuario")]
+    filas = ""
+    for p in mias:
+        ult = f' · último uso {esc(p.get("ultimo_uso"))}' if p.get("ultimo_uso") else ""
+        filas += (f'<li><div class="sp">{icon("huella")} <b>{esc(p.get("dispositivo", "?"))}</b>'
+                  f'<div><small class="hint">activada el {esc(p.get("creado", "?"))}{ult}</small></div></div>'
+                  f'<div class="acciones"><form method="post" action="{url_for("huella_borrar")}"'
+                  f' onsubmit="return confirm(\'¿Sacar la huella de este dispositivo? Va a tener que entrar con contraseña.\')">'
+                  f'<input type="hidden" name="cid" value="{esc(p.get("credential_id", ""))}">'
+                  f'<button class="sec btn-ico" aria-label="Borrar huella">{icon("trash")}</button></form></div></li>')
+    if not filas:
+        filas = f'<li class="vacio">{icon("huella")}<div>Todavía no activaste la huella en ningún dispositivo.</div></li>'
+    aviso_lib = ("" if _HUELLA_LIB else
+                 f'<div class="nota err">{icon("alert")} Falta la librería de huella en el server.</div>')
+    cuerpo = f"""
+    <div class="card">
+      <h2>{icon('huella')} Entrar con huella</h2>
+      <p><small class="hint">Activá la huella (o el PIN / la cara) de ESTE dispositivo para entrar
+         sin escribir la contraseña. La contraseña sigue funcionando como siempre — la huella es
+         solo un atajo, y nunca sale de tu aparato: acá se guarda solo una clave pública.</small></p>
+      {aviso_lib}
+      <button id="btnActivar" onclick="activar(this)">{icon('huella')} Activar la huella en este dispositivo</button>
+      <div id="pkEstado" style="margin-top:8px"><small class="hint"></small></div>
+    </div>
+    <div class="card">
+      <h2>{icon('list')} Mis dispositivos con huella</h2>
+      <ul class="lista compacta">{filas}</ul>
+    </div>
+    <script src="/static/passkeys.js?v=1"></script>
+    <script>
+    (async function(){{
+      if (!Passkeys.soportado() || !(await Passkeys.disponibleEnEsteAparato())) {{
+        document.getElementById('btnActivar').disabled = true;
+        document.querySelector('#pkEstado small').textContent =
+          'Este dispositivo no tiene huella/PIN disponible para el navegador.';
+      }}
+    }})();
+    async function activar(b){{
+      var m = document.querySelector('#pkEstado small');
+      b.disabled = true; m.textContent = 'Esperando la huella…';
+      try {{
+        var r = await Passkeys.registrar();
+        m.textContent = r.ya_estaba ? 'Este dispositivo ya estaba activado.' : '¡Listo! La próxima vez entrás con la huella.';
+        setTimeout(function(){{ location.reload(); }}, 1200);
+      }} catch(e) {{
+        m.textContent = Passkeys.traducir(e);
+        b.disabled = false;
+      }}
+    }}
+    </script>"""
+    return pagina("Huella", "", cuerpo)
+
+
+@app.route("/huella/borrar", methods=["POST"])
+@login_requerido
+def huella_borrar():
+    u = _usuario_logueado()
+    cid = request.form.get("cid", "")
+    with rb._io_lock:
+        lista = cargar("passkeys.json", "passkeys")
+        # solo las PROPIAS
+        nueva = [p for p in lista if not (p.get("credential_id") == cid and u
+                                          and p.get("usuario") == u.get("usuario"))]
+        if len(nueva) != len(lista):
+            guardar("passkeys.json", "passkeys", nueva)
+            flash("Huella borrada: ese dispositivo vuelve a entrar con contraseña.")
+        else:
+            flash("No encontré esa huella entre las tuyas.")
+    return redirect(url_for("huella"))
 
 
 # ----------------------------------------------------------------------

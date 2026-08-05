@@ -1095,5 +1095,71 @@ class TestVincularReservadores(BaseApp):
         self.assertEqual((listos, sin_vincular), ({}, []))
 
 
+# ----------------------------------------------------------------------
+#  16. Huella (WebAuthn) — mismo esquema que el Jalomi Manager
+# ----------------------------------------------------------------------
+class TestHuella(BaseApp):
+    """No se prueba la criptografía (eso es de la librería y necesita un aparato
+    real): se prueba lo NUESTRO — permisos, el challenge en cookie firmada, que
+    una credencial desconocida no entre y que cada uno borre solo las suyas."""
+
+    def _pk(self, usuario, cid):
+        return {"usuario": usuario, "credential_id": cid, "public_key": "cGs",
+                "sign_count": 0, "dispositivo": "Test", "creado": "2026-07-29 10:00",
+                "ultimo_uso": ""}
+
+    def test_pantalla_y_registro_piden_login(self):
+        c = self.web.app.test_client()
+        self.assertEqual(c.get("/huella").status_code, 302)
+        self.assertEqual(c.post("/passkeys/registro/opciones").status_code, 302)
+
+    def test_opciones_de_login_dan_challenge_y_cookie(self):
+        c = self.web.app.test_client()
+        r = c.post("/passkeys/login/opciones")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("challenge", r.get_json())
+        self.assertTrue(any("reservame_wa_reto" in h
+                            for h in r.headers.getlist("Set-Cookie")),
+                        "el challenge tiene que viajar en la cookie firmada")
+
+    def test_credencial_desconocida_no_entra(self):
+        c = self.web.app.test_client()
+        c.post("/passkeys/login/opciones")          # deja la cookie del reto
+        r = c.post("/passkeys/login/verificar", json={"id": "no-existe"})
+        self.assertEqual(r.status_code, 401)
+        # y la sesión NO quedó abierta
+        self.assertEqual(c.get("/reservas").status_code, 302)
+
+    def test_sin_reto_no_se_verifica(self):
+        c = self.web.app.test_client()
+        r = c.post("/passkeys/login/verificar", json={"id": "x"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_cada_uno_borra_solo_sus_huellas(self):
+        import json as _json
+        with open(os.path.join(self.tmp, "passkeys.json"), "w", encoding="utf-8") as f:
+            _json.dump({"passkeys": [self._pk("diego", "cid-diego"),
+                                     self._pk("pablo", "cid-pablo")]}, f)
+        # pablo intenta borrar la de diego: no pasa nada
+        self.cliente("pablo", "clave2").post("/huella/borrar", data={"cid": "cid-diego"},
+                                             follow_redirects=True)
+        quedan = {p["credential_id"] for p in self.web.cargar("passkeys.json", "passkeys")}
+        self.assertEqual(quedan, {"cid-diego", "cid-pablo"})
+        # la suya sí
+        self.cliente("pablo", "clave2").post("/huella/borrar", data={"cid": "cid-pablo"},
+                                             follow_redirects=True)
+        quedan = {p["credential_id"] for p in self.web.cargar("passkeys.json", "passkeys")}
+        self.assertEqual(quedan, {"cid-diego"})
+
+    def test_la_pantalla_lista_solo_las_propias(self):
+        import json as _json
+        with open(os.path.join(self.tmp, "passkeys.json"), "w", encoding="utf-8") as f:
+            _json.dump({"passkeys": [self._pk("diego", "cid-d2"),
+                                     self._pk("pablo", "cid-p2")]}, f)
+        h = self.cliente("pablo", "clave2").get("/huella").get_data(as_text=True)
+        self.assertIn("cid-p2", h)
+        self.assertNotIn("cid-d2", h)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
