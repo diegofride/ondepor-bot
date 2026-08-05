@@ -1151,6 +1151,23 @@ class TestHuella(BaseApp):
         quedan = {p["credential_id"] for p in self.web.cargar("passkeys.json", "passkeys")}
         self.assertEqual(quedan, {"cid-diego"})
 
+    def test_el_origen_es_https_detras_de_caddy(self):
+        """Bug real: detrás de Caddy la request llega por http a 127.0.0.1 y el origen
+        salía "http://…", así que el navegador firmaba https y WebAuthn rechazaba."""
+        with self.web.app.test_request_context(
+                "/", base_url="http://reservatucancha.duckdns.org"):
+            self.assertEqual(self.web._wa_origen(), "https://reservatucancha.duckdns.org")
+            self.assertEqual(self.web._wa_rp_id(), "reservatucancha.duckdns.org")
+        # si el proxy sí manda el header, manda el header
+        with self.web.app.test_request_context(
+                "/", base_url="http://reservatucancha.duckdns.org",
+                headers={"X-Forwarded-Proto": "https"}):
+            self.assertEqual(self.web._wa_origen(), "https://reservatucancha.duckdns.org")
+        # en local sigue siendo http (para poder probar sin certificado)
+        with self.web.app.test_request_context("/", base_url="http://localhost:8080"):
+            self.assertEqual(self.web._wa_origen(), "http://localhost:8080")
+            self.assertEqual(self.web._wa_rp_id(), "localhost")
+
     def test_la_pantalla_lista_solo_las_propias(self):
         import json as _json
         with open(os.path.join(self.tmp, "passkeys.json"), "w", encoding="utf-8") as f:

@@ -1337,7 +1337,15 @@ def _wa_rp_id():
 
 
 def _wa_origen():
-    return request.url_root.rstrip("/")
+    """Origen EXACTO que el navegador firma dentro del clientData. Detrás de Caddy la
+    request llega por http a 127.0.0.1, así que `request.url_root` dice "http://" y
+    WebAuthn rechaza la firma. Se respeta X-Forwarded-Proto si viene, y si no, todo lo
+    que no sea localhost se asume https (el panel solo se sirve por HTTPS)."""
+    host = request.host
+    proto = request.headers.get("X-Forwarded-Proto", "").split(",")[0].strip()
+    if not proto:
+        proto = "http" if host.split(":")[0] in ("localhost", "127.0.0.1") else "https"
+    return f"{proto}://{host}"
 
 
 def _wa_error(msg, codigo=400):
