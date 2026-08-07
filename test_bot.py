@@ -1085,6 +1085,63 @@ class TestCronograma(BaseApp):
         self.assertIn(NOMBRES_TEST[8], juegan,
                       "el que solo puede a las 16 tendría que entrar en la de las 16")
 
+    def test_se_puede_fijar_cuantas_canchas_por_horario(self):
+        """Pedido de Diego: 'quiero 2 a las 15 y 1 a las 16'. Lo fijado manda; lo que
+        no se fija lo resuelve el armador."""
+        import encuesta as enc
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00", "16:00", "17:00"]}}
+                 for n in NOMBRES_TEST[:12]}
+        votos.update({n: {"5": {"modo": enc.MODO_PRESTA}} for n in NOMBRES_TEST[12:]})
+        e = self._encuesta(votos)
+        plan = enc.armar_cronograma(e, {(5, "15:00"): 2, (5, "16:00"): 0})
+        cuenta = {}
+        for r in plan["reservas"]:
+            cuenta[r["hora"]] = cuenta.get(r["hora"], 0) + 1
+        self.assertEqual(cuenta.get("15:00"), 2, "no respetó las 2 de las 15")
+        self.assertEqual(cuenta.get("16:00", 0), 0, "no respetó el 0 de las 16")
+        self.assertTrue(self._sin_errores_de_verificacion(plan))
+
+    def test_si_lo_fijado_no_entra_avisa_y_no_devuelve_vacio(self):
+        """Antes, un horario fijado imposible tiraba abajo el plan entero sin explicar."""
+        import encuesta as enc
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00", "16:00"]}}
+                 for n in NOMBRES_TEST[:8]}
+        e = self._encuesta(votos)
+        # 2 canchas a las 16 es imposible: los 8 juegan a las 15 y su carnet recién se
+        # libera a las 16:00, justo cuando arranca el turno
+        plan = enc.armar_cronograma(e, {(5, "15:00"): 2, (5, "16:00"): 2})
+        self.assertTrue(plan["reservas"], "no tenía que devolver un plan vacío")
+        self.assertTrue(any("pediste" in a for a in plan["avisos"]), plan["avisos"])
+        self.assertTrue(self._sin_errores_de_verificacion(plan))
+
+    def test_la_dispara_un_carnet_prestado_si_ninguno_tiene_cuenta(self):
+        """Como en el cronograma de Diego: si entre los que juegan no hay cuenta de
+        OnDepor, la reserva la toma un prestado que sí tenga y ocupa un lugar."""
+        import encuesta as enc
+        sin_cuenta = [n for n in NOMBRES_TEST if n not in CON_CUENTA]
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]}} for n in sin_cuenta[:5]}
+        votos.update({n: {"5": {"modo": enc.MODO_PRESTA}} for n in CON_CUENTA})
+        plan = enc.armar_cronograma(self._encuesta(votos))
+        self.assertEqual(len(plan["reservas"]), 1)
+        r = plan["reservas"][0]
+        self.assertIn(r["reservador"]["nombre"], CON_CUENTA)
+        self.assertTrue(any("tiene cuenta de OnDepor" in a for a in r["avisos"]), r["avisos"])
+        self.assertTrue(self._sin_errores_de_verificacion(plan))
+
+    def test_el_reservador_prestado_no_dispara_dos_canchas(self):
+        """Bug real: al no anotarlo en la agenda, el mismo carnet prestado terminaba
+        disparando dos canchas que se pisaban en el tiempo."""
+        import encuesta as enc
+        sin_cuenta = [n for n in NOMBRES_TEST if n not in CON_CUENTA]
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00", "17:00"]}}
+                 for n in sin_cuenta[:9]}
+        votos.update({n: {"5": {"modo": enc.MODO_PRESTA}} for n in CON_CUENTA})
+        plan = enc.armar_cronograma(self._encuesta(votos))
+        disparan = [r["reservador"]["id"] for r in plan["reservas"]]
+        self.assertEqual(len(disparan), len(set(disparan)),
+                         "el mismo carnet no puede disparar dos canchas del día")
+        self.assertTrue(self._sin_errores_de_verificacion(plan))
+
     def test_sin_permiso_no_se_programa(self):
         import encuesta as enc
         self._encuesta({n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]}}

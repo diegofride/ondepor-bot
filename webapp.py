@@ -3388,6 +3388,52 @@ def _plural(n, singular, plural):
     return f"{n} {singular if n == 1 else plural}"
 
 
+def _fijas_de(datos):
+    """Cuántas canchas mandó a mano el admin para cada horario, del form/querystring:
+    campos "f<día>_<HH:MM>" con "" = que decida el armador."""
+    fijas = {}
+    for k, v in datos.items():
+        if not k.startswith("f") or "_" not in k or not str(v).strip().isdigit():
+            continue
+        d, _, h = k[1:].partition("_")
+        if d.isdigit() and re.fullmatch(r"\d{2}:\d{2}", h):
+            fijas[(int(d), h)] = max(0, min(3, int(v)))
+    return fijas or None
+
+
+def _selector_canchas(plan, fijas):
+    """Una fila por día con un selector por horario: 'auto' o cuántas canchas querés.
+    El armador respeta lo que fijes y resuelve el resto."""
+    por_dia = {}
+    for (d, h), cmax in sorted(plan.get("posibles", {}).items()):
+        por_dia.setdefault(d, []).append((h, cmax))
+    if not por_dia:
+        return ""
+    filas = ""
+    for d, horas in sorted(por_dia.items()):
+        cel = ""
+        for h, cmax in horas:
+            elegido = (fijas or {}).get((d, h))
+            ops = f'<option value="">auto</option>' + "".join(
+                f'<option value="{k}"{" selected" if elegido == k else ""}>{k}</option>'
+                for k in range(0, max(cmax, 1) + 1))
+            cel += (f'<label style="display:inline-block;margin:0 10px 8px 0">'
+                    f'<small class="hint">{int(h[:2])} h</small><br>'
+                    f'<select name="f{d}_{h}" onchange="this.form.submit()"'
+                    f' style="min-width:74px;padding:6px">{ops}</select></label>')
+        filas += f'<div style="margin-bottom:6px"><b>{enc.DIAS[d]}</b><br>{cel}</div>'
+    return f"""
+    <div class="card">
+      <h2>{icon('edit')} Cuántas canchas por horario</h2>
+      <p><small class="hint">En <b>auto</b> lo decide el armador. Si ponés un número, se
+         respeta y el resto se acomoda alrededor; si no entran, te avisa cuántas sí.</small></p>
+      <form method="get" action="{url_for('encuesta_cronograma')}">{filas}
+        <noscript><button class="sec">Recalcular</button></noscript>
+        <a class="btn sec" href="{url_for('encuesta_cronograma')}">Volver a auto</a>
+      </form>
+    </div>"""
+
+
 def _apertura_pasada(rsv):
     ap = (datetime.datetime.fromisoformat(f"{rsv['fecha']}T{rsv['hora']}:00")
           - datetime.timedelta(minutes=24 * 60 - 1))
@@ -3428,7 +3474,8 @@ def encuesta_cronograma():
     if not e:
         flash("Primero abrí una encuesta.")
         return redirect(url_for("encuesta_panel"))
-    plan = enc.armar_cronograma(e)
+    fijas = _fijas_de(request.args)
+    plan = enc.armar_cronograma(e, fijas)
 
     bloques, orden = {}, []
     for rsv in plan["reservas"]:
@@ -3480,10 +3527,13 @@ def encuesta_cronograma():
         txt = _plural(n, "reserva", "reservas") + (
             f" y {_plural(cambios, 'cambio de carnets', 'cambios de carnets')}"
             if cambios else "")
+        ocultos = "".join(
+            f'<input type="hidden" name="f{d}_{h}" value="{c}">'
+            for (d, h), c in (fijas or {}).items())
         boton = f"""
       <form method="post" action="{url_for('encuesta_cronograma_programar')}"
             onsubmit="return confirm('¿Programar {txt}? Cada reserva se dispara sola a su apertura.')">
-        <button>{icon('check')} Programar {txt}</button>
+        {ocultos}<button>{icon('check')} Programar {txt}</button>
       </form>"""
 
     cuerpo = f"""
@@ -3494,6 +3544,7 @@ def encuesta_cronograma():
          Nada se programa hasta que toques el botón de abajo.</small></p>
       {extras}
     </div>
+    {_selector_canchas(plan, fijas)}
     {cuerpo_bloques}
     <div class="card">
       {boton}
@@ -3511,7 +3562,7 @@ def encuesta_cronograma_programar():
     e = enc.cargar_encuesta()
     if not e:
         return redirect(url_for("encuesta_panel"))
-    plan = enc.armar_cronograma(e)
+    plan = enc.armar_cronograma(e, _fijas_de(request.form))
     if any("VERIFICACIÓN" in a for r in plan["reservas"] for a in r["avisos"]):
         flash("La verificación encontró un error en el plan: no se programó nada.")
         return redirect(url_for("encuesta_cronograma"))

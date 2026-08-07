@@ -567,24 +567,32 @@ MARGEN_CAMBIO_SEG = 300      # el cambio corre 5 min después de que se libera e
 MAX_ROTAN = 2                # regla de Darío: rotando afuera a lo sumo 2 por turno
 
 
-def armar_cronograma(e, elecciones=None):
+def armar_cronograma(e, fijas=None):
     """Arma el flujo de reservas del finde entero (modelo de Darío/Diego, ver
-    ARMADOR_CRONOGRAMA.md) buscando el reparto de carnets que dé MÁS HORAS DE JUEGO
-    en total; la prioridad (sáb tarde → dom mañana → sáb mañana → dom tarde) solo
-    desempata. Jugar y tener el carnet en la reserva son cosas distintas: el que votó
-    una hora juega esa hora aunque su carnet esté en otra reserva (rota); lo que se
-    reparte acá son los CARNETS. 'elecciones' se ignora (compatibilidad)."""
+    ARMADOR_CRONOGRAMA.md). Reparte los CARNETS; jugar y tener el carnet en la reserva
+    son cosas distintas (el que votó una hora la juega aunque su carnet esté en otra
+    reserva: rota).
+
+    'fijas' = {(día, "HH:MM"): cuántas canchas} para MANDAR a mano cuántas canchas va
+    cada horario (pedido de Diego: "quiero 2 a las 15 y 2 a las 16"). Lo que no venga
+    fijado lo decide el optimizador, que elige el plan con más canchas, después el que
+    hace jugar a más gente distinta, y recién ahí desempata por la prioridad
+    (sáb tarde → dom mañana → sáb mañana → dom tarde).
+    """
     r = resumen_votos(e)
     reservadores, sin_vincular = reservadores_con_carnet()
-    plan = _Armador(e, r, reservadores).mejor_plan()
+    a = _Armador(e, r, reservadores, fijas)
+    plan = a.mejor_plan()
     verificar_plan(plan["reservas"], r, e)
-    plan.update({"resumen": r, "sin_vincular": sin_vincular})
+    plan.update({"resumen": r, "sin_vincular": sin_vincular,
+                 "fijas": a.fijas, "posibles": a.posibles()})
     return plan
 
 
 class _Armador:
-    def __init__(self, e, r, cuentas):
+    def __init__(self, e, r, cuentas, fijas=None):
         self.e, self.r, self.cuentas = e, r, cuentas
+        self.fijas = {(int(d), str(h)): int(c) for (d, h), c in (fijas or {}).items()}
         self.dias = list(e.get("dias", DIAS_POR_DEFECTO))
         self.fechas = e.get("fechas", {})
         # por día: [(hora, votantes, canchas_max)] en orden cronológico
@@ -622,13 +630,22 @@ class _Armador:
     #  (ahí está el conflicto grande: la tarde del sábado contra el domingo)
     #  y el segundo día se llena greedy. Gana el plan con más canchas.
     # ------------------------------------------------------------------
+    def posibles(self):
+        """Cuántas canchas admite cada horario por cantidad de gente (el tope de la
+        regla 4-7/8-11/12+). Lo usa la pantalla para ofrecer el selector."""
+        return {(d, h): cmax for d in self.dias for h, _, cmax in self.turnos[d]}
+
     def mejor_plan(self):
         d1 = self.dias[0]
         bolsa1 = len(self.r["por_dia"].get(d1, {}).get("bolsa", {}))
-        opciones = [range(cmax + 1) for _, _, cmax in self.turnos[d1]]
+        # los horarios FIJADOS a mano no se enumeran: van como los pidió Diego
+        opciones = [([self.fijas[(d1, h)]] if (d1, h) in self.fijas else range(cmax + 1))
+                    for h, _, cmax in self.turnos[d1]]
         mejor = None
         for combo in itertools.product(*opciones):
-            if sum(combo) * POR_CANCHA > bolsa1:
+            # el filtro por presupuesto es solo un atajo: si hay horarios FIJADOS a mano
+            # no se aplica, porque ahí lo que corresponde es intentar y degradar avisando
+            if not self.fijas and sum(combo) * POR_CANCHA > bolsa1:
                 continue
             cfg = {h: c for (h, _, _), c in zip(self.turnos[d1], combo)}
             plan = self._simular(cfg)
@@ -652,18 +669,50 @@ class _Armador:
         d1 = self.dias[0]
         for h, pids, cmax in self.turnos[d1]:
             c = cfg_d1.get(h, 0)
-            st["armadas"][(d1, h)] = c
-            if c and not self._armar_turno(st, d1, h, c):
-                return None                       # esta configuración no cierra
+            st["armadas"][(d1, h)] = 0
+            if not c:
+                continue
+            if (d1, h) not in self.fijas:
+                if not self._armar_turno(st, d1, h, c):
+                    return None                   # esta configuración no cierra
+                st["armadas"][(d1, h)] = c
+                continue
+            # horario FIJADO a mano: si no entran las que pediste, se baja de a una y
+            # se avisa — mejor eso que devolver un plan vacío sin explicar por qué
+            for cc in range(c, 0, -1):
+                foto = self._foto(st)
+                if self._armar_turno(st, d1, h, cc):
+                    st["armadas"][(d1, h)] = cc
+                    if cc < c:
+                        st["avisos"].append(
+                            f"{DIAS[d1]} {int(h[:2])} h: pediste {c} canchas y solo "
+                            f"{'entra 1' if cc == 1 else 'entran ' + str(cc)} "
+                            f"(los demás tienen el carnet tomado a esa hora).")
+                    break
+                self._volver(st, foto)
+            else:
+                st["avisos"].append(
+                    f"{DIAS[d1]} {int(h[:2])} h: pediste {c} cancha(s) y no entra "
+                    f"ninguna — a esa hora no quedan carnets libres.")
         for d in self.dias[1:]:
             for h, pids, cmax in self.turnos[d]:
                 st["armadas"][(d, h)] = 0
-                for c in range(cmax, 0, -1):
+                # si está fijado a mano se intenta ESE número y nada más
+                intentos = ([self.fijas[(d, h)]] if (d, h) in self.fijas
+                            else range(cmax, 0, -1))
+                for c in intentos:
+                    if not c:
+                        break
                     foto = self._foto(st)
                     if self._armar_turno(st, d, h, c):
                         st["armadas"][(d, h)] = c
                         break
                     self._volver(st, foto)
+                    if (d, h) in self.fijas:     # solo avisa lo que pediste vos
+                        st["avisos"].append(
+                            f"{DIAS[d]} {int(h[:2])} h: pediste {c} cancha(s) y no salen "
+                            f"(no alcanzan los carnets libres a esa hora).")
+                        break
         st["score"] = self._puntaje(st)
         return st
 
@@ -760,6 +809,7 @@ class _Armador:
         fin = turno + datetime.timedelta(minutes=DUR_TURNO_MIN)
         avisos = []
         etiqueta = f"{DIAS[d]} {int(hora[:2])} h · cancha {num}"
+        nom = lambda p: self._nombre(d, p)      # noqa: E731
 
         directos = [p for p in juegan if agenda.libre(club, p, apertura, fin)]
         pisados = [p for p in juegan if p not in directos]
@@ -779,10 +829,31 @@ class _Armador:
             if len(pisadores) < len(pisados):
                 return None                    # no hay con qué pisar
 
+        res_prestado = None      # se llena solo si la dispara un carnet prestado
         res_ini = next((p for p in directos if p in self.cuentas), None) \
             or next((p for p in pisadores if p in self.cuentas), None)
         if not res_ini:
-            return None                        # nadie puede disparar la reserva
+            # nadie de los que juegan tiene cuenta de OnDepor. Como en el cronograma que
+            # armó Diego a mano, la dispara un carnet PRESTADO que sí la tenga; como el
+            # reservador no se puede sacar con el cambio, ocupa un lugar de la cancha y
+            # sale el jugador que más horarios votó (es el que tiene más chances de
+            # entrar en otro turno).
+            res_ini = next((p for p in self._pool_pisadores(d)
+                            if p in self.cuentas and p not in juegan
+                            and agenda.libre(club, p, apertura, fin)), None)
+            if res_ini is None:
+                return None                    # no hay ninguna cuenta libre a esa hora
+            res_prestado = res_ini
+            fuera = max(juegan, key=lambda p: (self.n_horas.get((d, p), 1), nom(p).lower()))
+            juegan = [p for p in juegan if p != fuera]
+            rotan = list(rotan) + [fuera]
+            directos = [p for p in directos if p != fuera]
+            pisados = [p for p in pisados if p != fuera]
+            if pisadores:                      # sobra un pisador: ya no hace falta
+                pisadores = pisadores[:len(pisados)]
+            avisos.append(f"{etiqueta}: ninguno de los que juegan tiene cuenta de OnDepor, "
+                          f"así que la dispara {self.cuentas.get(res_ini, nom(res_ini))} "
+                          f"con un carnet prestado y ocupa un lugar (queda para 3).")
 
         res_fin = res_ini if res_ini in juegan else \
             next((p for p in juegan if p in self.cuentas), None)
@@ -813,8 +884,12 @@ class _Armador:
             for p in pisados:
                 agenda.ocupar(club, p, cambio_dt, fin)
         st["usados"] |= set(directos) | set(pisadores) | (set(pisados) if cambio_dt else set())
+        if res_prestado:
+            # el reservador prestado no está en directos ni en pisadores: si no se anota
+            # acá, su carnet queda "libre" y termina disparando dos canchas a la vez
+            agenda.ocupar(club, res_prestado, apertura, fin)
+            st["usados"].add(res_prestado)
 
-        nom = lambda p: self._nombre(d, p)      # noqa: E731
         titulares = [p for p in directos + pisadores if p != res_ini]
         return {
             "fecha": fecha, "hora": hora, "club_id": club, "dia": d,
