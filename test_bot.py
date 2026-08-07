@@ -146,6 +146,34 @@ class TestCanchas(BaseApp):
         orden = [c["nombre"] for c in self.core.OnDepor.ordenar_canchas(self.C, "")]
         self.assertEqual(orden, [c["nombre"] for c in self.C])
 
+    def test_la_cancha_1_no_matchea_con_la_10_ni_la_11(self):
+        """BUG REAL (07/08/2026): se pidió la cancha 1 y el bot reservó la 10. El
+        criterio hacía 'in' sobre el nombre, y "1" está dentro de "10-CHACRA". Peor
+        todavía: la pre-carga creía que la 1 ya estaba en la lista y no la agregaba."""
+        todas = self.C + [{"court_id": 14425, "nombre": "09-CHACRA"},
+                          {"court_id": 14426, "nombre": "10-CHACRA"},
+                          {"court_id": 14427, "nombre": "11-CHACRA"}]
+        coincide = self.core.OnDepor._cancha_coincide
+        self.assertTrue(coincide({"court_id": 12739, "nombre": "01-QUINTA"}, "1"))
+        for nom in ("10-CHACRA", "11-CHACRA"):
+            self.assertFalse(coincide({"court_id": 0, "nombre": nom}, "1"),
+                             f"{nom} no es la cancha 1")
+        # y al ordenar, la 1 tiene que quedar primera (no la 10)
+        orden = [c["nombre"] for c in self.core.OnDepor.ordenar_canchas(todas, "1")]
+        self.assertEqual(orden[0], "01-QUINTA")
+        # el mismo problema al revés: pedir la 9 no puede traer la 19 si existiera
+        self.assertFalse(coincide({"court_id": 0, "nombre": "19-CHACRA"}, "9"))
+        # las zonas por nombre siguen andando
+        self.assertTrue(coincide({"court_id": 0, "nombre": "05-KINERET"}, "KINERET"))
+
+    def test_si_la_pedida_no_esta_en_la_lista_se_agrega_adelante(self):
+        """Consecuencia del bug anterior: como creía que la 1 estaba (por la 10), la
+        pre-carga no la agregaba y confirmaba en la 10."""
+        sin_la_1 = [{"court_id": 14426, "nombre": "10-CHACRA"},
+                    {"court_id": 14427, "nombre": "11-CHACRA"}]
+        hay = any(self.core.OnDepor._cancha_coincide(c, "1") for c in sin_la_1)
+        self.assertFalse(hay, "creía que la cancha 1 estaba en la lista")
+
     def test_ordenar_no_pierde_ni_duplica_canchas(self):
         for pref in ("6", "KINERET", "", "99"):
             orden = self.core.OnDepor.ordenar_canchas(self.C, pref)

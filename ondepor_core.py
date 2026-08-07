@@ -224,14 +224,21 @@ class OnDepor:
     def _cancha_coincide(c, preferida):
         """¿Esta cancha es la que se pidió? Acepta número ('5'), nombre completo
         ('05-KINERET'), zona ('KINERET') o court_id. ÚNICA definición del criterio:
-        la usan elegir_cancha, ordenar_canchas y la pre-carga (antes estaba triplicado)."""
+        la usan elegir_cancha, ordenar_canchas y la pre-carga (antes estaba triplicado).
+
+        ⚠ Si se pide un NÚMERO se compara SOLO por número. El "p in nom" de antes hacía
+        que pedir la 1 matcheara con "10-CHACRA" y "11-CHACRA" (bug real del 07/08: se
+        pidió la cancha 1 y reservó la 10, y encima la pre-carga creía que la 1 estaba
+        en la lista y no la agregaba)."""
         p = str(preferida or "").strip().lower()
         if p == "":
             return True
         nom = str(c.get("nombre", "")).lower()
-        return (p == str(c.get("court_id")) or p == nom or p in nom
-                or nom.startswith(p + "-")
-                or nom.split("-")[0].lstrip("0") == p.lstrip("0"))
+        if p == str(c.get("court_id")):
+            return True
+        if p.isdigit():
+            return nom.split("-")[0].lstrip("0") == p.lstrip("0")
+        return p == nom or p in nom or nom.startswith(p + "-")
 
     @staticmethod
     def elegir_cancha(canchas, preferida=""):
