@@ -275,6 +275,18 @@ def _candidatos_fuente(job):
     return cands
 
 
+def _log_intentos(rid, resp):
+    """Deja en el log CADA tiro del disparo: qué cancha, cuánto tardó y qué contestó.
+    El tiempo es el dato que importa: OnDepor dice "está ocupada" en 0,2-0,4 s, pero
+    tarda ~1,3 s cuando la cancha se pierde sobre la línea (o cuando la reserva entra).
+    Sin esto, el 07/08/2026 hubo que deducir de los timestamps por qué se perdieron dos
+    canchas pedidas."""
+    for n, it in enumerate(resp.get("_intentos") or [], 1):
+        err = str(it.get("error", "")).strip('"')
+        log(rid, f"   tiro {n}: cancha={it.get('cancha')} -> {it.get('status')} "
+                 f"en {it.get('ms')} ms{('  ' + err[:120]) if err and err != '' else ''}")
+
+
 def disparar(job, esperar=True):
     rid = job["id"]
     if job.get("problema"):
@@ -337,10 +349,15 @@ def disparar(job, esperar=True):
                 resp = api.confirmar_objetivo(listo, job["fecha"], job["hora_desde"], job["hora_hasta"],
                                               job["jugadores_full"], single_double=job["single_double"],
                                               telephone=job["telefono"], cancha_preferida=job["cancha"])
+                _log_intentos(rid, resp)
                 if resp.get("status") == "success":
                     cancha = (resp.get("_cancha") or {}).get("nombre", "")
+                    multi = resp.get("_multiple")
                     log(rid, "=========================================")
                     log(rid, f"  RESERVA CONFIRMADA (OK, pre-carga)  cancha={cancha}  " + str(resp.get("result_text", "")))
+                    if multi:
+                        log(rid, f"  ⚠ OJO: entraron VARIAS canchas a la vez ({', '.join(multi)}). "
+                                 f"Quedó '{cancha}'; CANCELÁ LAS DEMÁS a mano en OnDepor.")
                     log(rid, "=========================================")
                     return True
                 log(rid, f"pre-carga no entró ({resp.get('status')}: "
@@ -358,6 +375,7 @@ def disparar(job, esperar=True):
             time.sleep(job["espera"])
             continue
         estado = resp.get("status")
+        _log_intentos(rid, resp)   # no imprime nada si el intento ni llegó a confirmar
         if estado == "success":
             cancha = (resp.get("_cancha") or {}).get("nombre", "")
             multi = resp.get("_multiple")

@@ -253,6 +253,45 @@ class TestPrecarga(BaseApp):
     def test_precarga_40s_antes(self):
         self.assertEqual(self.rb.PRECARGA_ANTES_SEG, 40)
 
+    # -- el plan B no puede depender de lo que le sobre al turno fuente --
+    def _api_fuente(self, canchas_del_fuente):
+        api = self.core.OnDepor.__new__(self.core.OnDepor)
+        api.club_id, api.svid, api.csrf, api._ultimo_form = 1102, "x", "y", {}
+        api.abrir_formulario = lambda f, h: "J1"
+        api.canchas_disponibles = lambda *a, **k: list(canchas_del_fuente)
+        api.preparar_jugadores = lambda j: None
+        return api
+
+    def test_plan_b_suma_todas_las_canchas_del_club(self):
+        """07/08/2026: el fuente tenía 2 libres, las 2 ocupadas en el objetivo, y el tick
+        se quedó sin salida — mientras había 5 canchas libres a esa misma hora."""
+        api = self._api_fuente([{"court_id": 12596, "nombre": "05-KINERET"}])
+        listo = api.precargar_objetivo([{"id": 1, "nombre": "a"}], cancha_preferida="10",
+                                       fuentes=[("2026-08-08", "14:00", "15:00")], pausa=0,
+                                       canchas_club=self.rb.CANCHAS_POR_CLUB[1102])
+        ids = [c["court_id"] for c in listo["canchas"]]
+        self.assertEqual(len(ids), 11)                        # todas las del club
+        self.assertEqual(ids[0], 14426)                       # la PEDIDA primera
+        self.assertEqual(ids[1], 12596)                       # después la que sí ofreció el fuente
+        self.assertEqual(len(set(ids)), 11)                   # sin repetidas
+
+    def test_plan_b_no_repite_la_que_ya_estaba(self):
+        api = self._api_fuente([{"court_id": 14426, "nombre": "10-CHACRA"},
+                                {"court_id": 12596, "nombre": "05-KINERET"}])
+        listo = api.precargar_objetivo([{"id": 1, "nombre": "a"}], cancha_preferida="10",
+                                       fuentes=[("2026-08-08", "14:00", "15:00")], pausa=0,
+                                       canchas_club=self.rb.CANCHAS_POR_CLUB[1102])
+        ids = [c["court_id"] for c in listo["canchas"]]
+        self.assertEqual(ids[0], 14426)
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(len(ids), 11)
+
+    def test_plan_b_sin_mapa_de_club_no_revienta(self):
+        api = self._api_fuente([{"court_id": 12596, "nombre": "05-KINERET"}])
+        listo = api.precargar_objetivo([{"id": 1, "nombre": "a"}], cancha_preferida="10",
+                                       fuentes=[("2026-08-08", "14:00", "15:00")], pausa=0)
+        self.assertEqual([c["court_id"] for c in listo["canchas"]], [12596])
+
 
 # ----------------------------------------------------------------------
 #  5. confirmar_objetivo: paralelo solo con cancha puntual ocupada
@@ -309,6 +348,103 @@ class TestConfirmarObjetivo(BaseApp):
                                          "errors": {"general": ["Ocurrió un error, refresca tu pantalla"]}}
         r = api.confirmar_objetivo(self.LISTO, "2026-07-26", "22:00", "23:00", self.P, cancha_preferida="6")
         self.assertEqual(r["status"], "failure")
+
+    # -- insistir con la cancha PEDIDA (07/08/2026: se pedía la 9 y la 10, volvían
+    #    "ocupada" en ~1,3 s —una carrera perdida— y no se reintentaban nunca más) --
+    def _api_ocupada_n_veces(self, cancha, veces):
+        """La cancha 'cancha' contesta ocupada las primeras 'veces' y después entra."""
+        api = self._api(set())
+        quedan = {"n": veces}
+
+        def confirmar(f, hd, hh, court, jid, pids, sd=2, tel="", sess=None):
+            api.cont["confirm"] += 1
+            if court == cancha and quedan["n"] > 0:
+                quedan["n"] -= 1
+                return {"status": "failure", "errors": {"general": ["Cancha no disponible."]}}
+            return {"status": "success", "result_text": "ok"}
+        api.confirmar = confirmar
+        return api
+
+    def test_insiste_con_la_pedida_y_se_la_queda(self):
+        """Perdida por milésimas al primer tiro -> al segundo entra Y ES LA PEDIDA.
+        Sin abrir el abanico: nada de quedarse con una alternativa (ni con dos canchas)."""
+        api = self._api_ocupada_n_veces(6, 1)
+        r = api.confirmar_objetivo(self.LISTO, "2026-07-26", "22:00", "23:00", self.P,
+                                   cancha_preferida="6")
+        self.assertEqual(r["status"], "success")
+        self.assertEqual(r["_cancha"]["court_id"], 6)   # NO una alternativa
+        self.assertEqual(api.cont["paralelo"], 0)       # NO se disparó nada más
+        self.assertIsNone(r.get("_multiple"))
+
+    def test_recien_en_la_ultima_ronda_abre_el_abanico(self):
+        """Si la pedida se fue de verdad, la última ronda dispara todo junto — y si entran
+        varias, la que queda es la pedida (va primera en el orden)."""
+        api = self._api_ocupada_n_veces(6, 2)
+        r = api.confirmar_objetivo(self.LISTO, "2026-07-26", "22:00", "23:00", self.P,
+                                   cancha_preferida="6")
+        self.assertEqual(r["status"], "success")
+        self.assertEqual(api.cont["paralelo"], 1)
+        self.assertEqual(r["_cancha"]["court_id"], 6)
+        self.assertEqual(len(r.get("_multiple") or []), 3)   # avisa para cancelar las de sobra
+
+    def test_no_insiste_para_siempre(self):
+        api = self._api({6, 7, 8})
+        r = api.confirmar_objetivo(self.LISTO, "2026-07-26", "22:00", "23:00", self.P,
+                                   cancha_preferida="6", rondas=3)
+        self.assertNotEqual(r["status"], "success")
+        self.assertEqual(api.cont["paralelo"], 1)            # una sola ronda en paralelo
+        self.assertEqual(api.cont["confirm"], 2 + 3)         # 2 tiros a la pedida + las 3 juntas
+
+    def test_deja_de_insistir_si_el_error_no_es_de_cancha(self):
+        """Cupo/jugador/'refresca' no se arreglan con otro tiro: cortar para el flujo normal."""
+        api = self._api({6})
+        n = {"i": 0}
+        base = api.confirmar
+
+        def confirmar(*a, **k):
+            n["i"] += 1
+            if n["i"] == 1:
+                return base(*a, **k)                          # 1er tiro: ocupada -> hay ronda 2
+            return {"status": "failure",
+                    "errors": {"general": ["Juan tiene el máximo de reservas activas"]}}
+        api.confirmar = confirmar
+        r = api.confirmar_objetivo(self.LISTO, "2026-07-26", "22:00", "23:00", self.P,
+                                   cancha_preferida="6")
+        self.assertNotEqual(r["status"], "success")
+        self.assertEqual(n["i"], 2)                           # cortó en la ronda 2
+        self.assertEqual(api.cont["paralelo"], 0)
+
+    def test_zona_no_insiste_ni_dispara_en_paralelo(self):
+        api = self._api({6, 7, 8})
+        r = api.confirmar_objetivo(self.LISTO, "2026-07-26", "22:00", "23:00", self.P,
+                                   cancha_preferida="KINERET")
+        self.assertNotEqual(r["status"], "success")
+        self.assertEqual(api.cont["paralelo"], 0)
+        self.assertEqual(api.cont["confirm"], 3)             # una vuelta y nada más
+
+    def test_tope_de_tiempo_corta_las_rondas(self):
+        api = self._api({6, 7, 8})
+        api.confirmar_objetivo(self.LISTO, "2026-07-26", "22:00", "23:00", self.P,
+                               cancha_preferida="6", limite_seg=0)
+        self.assertEqual(api.cont["paralelo"], 0)
+
+    def test_cada_tiro_queda_registrado_con_su_tiempo(self):
+        """Sin esto no se distingue 'está ocupada' (0,2-0,4 s) de una carrera perdida (~1,3 s)."""
+        api = self._api({6})
+        r = api.confirmar_objetivo(self.LISTO, "2026-07-26", "22:00", "23:00", self.P,
+                                   cancha_preferida="6")
+        tiros = r["_intentos"]
+        self.assertEqual(tiros[0]["cancha"], "06")
+        self.assertIn("disponible", tiros[0]["error"].lower())
+        self.assertTrue(all(isinstance(t["ms"], int) for t in tiros))
+        self.assertGreater(len(tiros), 1)
+
+    def test_sin_canchas_no_revienta(self):
+        api = self._api(set())
+        r = api.confirmar_objetivo({"jid": "J1", "canchas": []}, "2026-07-26", "22:00",
+                                   "23:00", self.P, cancha_preferida="6")
+        self.assertEqual(r["status"], "sin_cancha")
+        self.assertEqual(api.cont["confirm"], 0)
 
 
 # ----------------------------------------------------------------------

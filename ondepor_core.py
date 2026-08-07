@@ -46,6 +46,16 @@ SVID_FALLBACK = "2.1.1"   # version del sitio; se lee del HTML, esto es por si f
 PAUSA_PASO = 0.35         # respiro entre pasos del flujo de reserva (evita el "refresca tu pantalla")
 PAUSA_RAPIDA = 0.05       # pausa mínima para el disparo a la apertura (jugadores ya pre-registrados)
 
+# -- Tick de la apertura: cuánto insistir con la cancha PEDIDA --------------
+# 07/08/2026: se pidieron las canchas 9 y 10 y las dos volvieron "ocupada" DESPUÉS de
+# ~1,3 s — lo mismo que tarda una reserva que ENTRA (la 11 entró en 1,284 s), y 5 veces
+# más que un "no" de verdad (0,20-0,40 s medidos). Eso es una carrera perdida por
+# milésimas, no una cancha tomada. Se tiraba UN solo tiro y no se volvía a intentar
+# nunca más: ahora se insiste.
+TICK_RONDAS = 3           # tiros a la cancha pedida (el 1ro solo, los demás con las otras)
+TICK_ESPERA = 0.15        # respiro entre rondas
+TICK_LIMITE_SEG = 6.0     # tope total del tick; pasado eso actúa el flujo normal completo
+
 
 # ----------------------------------------------------------------------
 #  Reloj real (NTP) y calculo de la hora de apertura
@@ -109,6 +119,15 @@ def midnight_epoch(fecha, tz_offset=-3):
 def _ids_jugadores(jugadores):
     """Normaliza la lista de jugadores a player_ids. Acepta [{id, nombre}] o [player_id]."""
     return [(j.get("id") if isinstance(j, dict) else j) for j in jugadores]
+
+
+def _es_ocupada(r):
+    """¿El rechazo es "esa cancha no está libre"? ÚNICA definición del criterio (antes
+    estaba duplicada en reservar() y en confirmar_objetivo()). Los demás errores —cupo,
+    jugador repetido, "refresca tu pantalla"— NO son de cancha: cortan el tick para que
+    actúe el flujo normal completo, porque insistir con otra cancha no los arregla."""
+    e = json.dumps(r.get("errors", r), ensure_ascii=False).lower()
+    return ("no disponible" in e) or ("ocupada" in e) or ("no est" in e and "disponible" in e)
 
 
 def calcular_apertura(fecha, hora_desde, horas_antes=24, minutos_extra=1, tz_offset=-3):
@@ -353,20 +372,16 @@ class OnDepor:
 
         pids = _ids_jugadores(jugadores)
         es_unica = str(cancha_preferida or "").strip().isdigit()   # pidió UNA cancha puntual
-
-        def _ocupada(r):
-            e = json.dumps(r.get("errors", r), ensure_ascii=False).lower()
-            return ("no disponible" in e) or ("ocupada" in e) or ("no est" in e and "disponible" in e)
+        reg = []                          # cada intento con su tiempo y su error (para el log)
 
         # 1) probar la cancha preferida (o la primera del orden)
-        primera = canchas_orden[0]
-        resp = self.confirmar(fecha, hora_desde, hora_hasta, primera["court_id"], jid,
-                              pids, single_double, telephone)
-        resp["_cancha"] = primera
+        resp = self._confirmar_reg(reg, canchas_orden[0], fecha, hora_desde, hora_hasta,
+                                   jid, pids, single_double, telephone)
         resp["_canchas_ofrecidas"] = canchas
+        resp["_intentos"] = reg
         if resp.get("status") == "success":
             return resp
-        if not _ocupada(resp):
+        if not _es_ocupada(resp):
             return resp                    # error que NO es de cancha (cupo, "refresca", jugador): cortar
         resto = canchas_orden[1:]
         if not resto:
@@ -374,37 +389,63 @@ class OnDepor:
 
         # 2a) cancha ÚNICA ocupada -> disparar TODAS las demás EN PARALELO (a la vez)
         if es_unica:
-            return self._confirmar_paralelo(resto, fecha, hora_desde, hora_hasta, jid,
-                                            pids, single_double, telephone, canchas)
+            r2 = self._confirmar_paralelo(resto, fecha, hora_desde, hora_hasta, jid,
+                                          pids, single_double, telephone, canchas, reg)
+            r2["_intentos"] = reg
+            return r2
 
         # 2b) zona / cualquiera -> secuencial (sin riesgo de doble reserva)
         ultimo = resp
         for cancha in resto:
-            r2 = self.confirmar(fecha, hora_desde, hora_hasta, cancha["court_id"], jid,
-                                pids, single_double, telephone)
-            r2["_cancha"] = cancha
+            r2 = self._confirmar_reg(reg, cancha, fecha, hora_desde, hora_hasta, jid,
+                                     pids, single_double, telephone)
             r2["_canchas_ofrecidas"] = canchas
+            r2["_intentos"] = reg
             if r2.get("status") == "success":
                 return r2
-            if _ocupada(r2):
+            if _es_ocupada(r2):
                 ultimo = r2
                 continue
             return r2
         return ultimo
 
+    def _confirmar_reg(self, registro, cancha, fecha, hora_desde, hora_hasta, jid,
+                       pids, single_double, telephone, sess=None):
+        """confirmar() + CRONÓMETRO. Cada intento queda anotado en 'registro' con cuánto
+        tardó y qué contestó OnDepor. Sin esto no se puede distinguir un "esa cancha está
+        tomada" (contesta en 0,2-0,4 s) de una carrera perdida (tarda ~1,3 s, lo mismo que
+        una reserva que entra) — que fue justo lo que pasó el 07/08/2026 y hubo que
+        deducirlo a mano de los tiempos del log."""
+        t0 = time.perf_counter()
+        try:
+            r = self.confirmar(fecha, hora_desde, hora_hasta, cancha["court_id"], jid,
+                               pids, single_double, telephone, sess=sess)
+        except Exception as e:
+            r = {"status": "error", "errors": str(e)}
+        r["_cancha"] = cancha
+        r["_ms"] = int((time.perf_counter() - t0) * 1000)
+        if registro is not None:
+            registro.append({                       # list.append es atómico: sirve desde hilos
+                "cancha": str(cancha.get("nombre", "")),
+                "status": str(r.get("status", "")),
+                "ms": r["_ms"],
+                "error": json.dumps(r.get("errors", ""), ensure_ascii=False)[:200],
+            })
+        return r
+
     def _confirmar_paralelo(self, canchas, fecha, hora_desde, hora_hasta, jid,
-                            pids, single_double, telephone, canchas_ofrecidas):
+                            pids, single_double, telephone, canchas_ofrecidas,
+                            registro=None):
         """Dispara la confirmación en TODAS las canchas al mismo tiempo (cada hilo con su
-        copia de sesión). Devuelve la primera exitosa; si entró más de una, lo marca en
-        '_multiple' para poder avisar (hay que cancelar las de sobra a mano)."""
+        copia de sesión). Devuelve la primera exitosa EN EL ORDEN DE ENTRADA — por eso la
+        cancha pedida va primera: si entra junto con otra, la que queda es la pedida. Si
+        entró más de una lo marca en '_multiple' para poder avisar (hay que cancelar las de
+        sobra a mano). Si no entró ninguna devuelve el primer error que NO sea de cancha
+        (cupo, jugador, "refresca"): es el informativo, y corta el tick."""
         def intentar(c):
-            try:
-                rr = self.confirmar(fecha, hora_desde, hora_hasta, c["court_id"], jid,
-                                    pids, single_double, telephone, sess=self._clonar_sesion())
-            except Exception as e:
-                rr = {"status": "error", "errors": str(e)}
-            rr["_cancha"] = c
-            return rr
+            return self._confirmar_reg(registro, c, fecha, hora_desde, hora_hasta, jid,
+                                       pids, single_double, telephone,
+                                       sess=self._clonar_sesion())
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(canchas), 12)) as ex:
             resultados = list(ex.map(intentar, canchas))
         exitos = [r for r in resultados if r.get("status") == "success"]
@@ -414,7 +455,9 @@ class OnDepor:
             if len(exitos) > 1:
                 ganador["_multiple"] = [str((e.get("_cancha") or {}).get("nombre", "")) for e in exitos]
             return ganador
-        peor = resultados[0] if resultados else {"status": "sin_cancha", "errors": "ninguna cancha disponible"}
+        otros = [r for r in resultados if not _es_ocupada(r)]
+        peor = (otros or resultados or
+                [{"status": "sin_cancha", "errors": "ninguna cancha disponible"}])[0]
         peor["_canchas_ofrecidas"] = canchas_ofrecidas
         return peor
 
@@ -460,6 +503,17 @@ class OnDepor:
                 cid = (canchas_club or {}).get(pref)
                 if cid:
                     orden = [{"court_id": cid, "nombre": f"{pref} (pedida)"}] + orden
+            # PLAN B COMPLETO: atrás van TODAS las demás canchas del club. El fuente solo
+            # aporta las que a ÉL le sobran, y el 07/08/2026 eso dejó el tick sin salida:
+            # el fuente tenía 2 libres, las 2 ocupadas en el objetivo, y el flujo lento
+            # encontró 5 canchas libres 5 segundos más tarde. Que el fuente no liste una
+            # cancha no impide confirmarla en el objetivo (verificado 25/07).
+            ids = {str(c["court_id"]) for c in orden}
+            for num, cid in sorted((canchas_club or {}).items(),
+                                   key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 99):
+                if str(cid) not in ids:
+                    orden.append({"court_id": cid, "nombre": str(num)})
+                    ids.add(str(cid))
             if p:
                 time.sleep(p)
             try:
@@ -470,37 +524,70 @@ class OnDepor:
         return None
 
     def confirmar_objetivo(self, listo, fecha, hora_desde, hora_hasta, jugadores,
-                           single_double=2, telephone="", cancha_preferida=""):
-        """TICK: confirma el objetivo con el estado pre-cargado (jid + canchas del fuente),
-        SIN abrir formulario ni courtsavailable. Prueba la cancha preferida (1ra del orden);
-        si está ocupada EN EL OBJETIVO y se pidió una cancha PUNTUAL, dispara las demás EN
-        PARALELO (igual que reservar(): OnDepor rechaza 2 turnos el mismo día, así que es
-        seguro y evita perder ~0.5 s por cada cancha). Otros errores (refresca/cupo) cortan
-        para que el fallback del orquestador tome el flujo normal completo."""
+                           single_double=2, telephone="", cancha_preferida="",
+                           rondas=TICK_RONDAS, limite_seg=TICK_LIMITE_SEG):
+        """TICK: confirma el objetivo con el estado pre-cargado (jid + canchas), SIN abrir
+        formulario ni courtsavailable.
+
+        Cancha PUNTUAL (ej "10"):
+          · rondas 1..N-1 -> SOLO la pedida, una y otra vez. Insistir es el punto de todo
+            esto: la pedida se pierde por milésimas y al segundo tiro suele estar. Sola,
+            porque así no hay manera de quedarse con dos canchas.
+          · ronda N -> la pedida (primera, para que gane si entran dos) junto con TODAS
+            las demás en paralelo: si la pedida se fue de verdad, que al menos salga una.
+        Zona / cualquiera: secuencial en el orden dado (no se insiste: cualquier cancha
+        sirve, y disparar en paralelo arriesga quedarse con dos).
+
+        Corta al toque —sin gastar rondas— si el error NO es de cancha (cupo, jugador
+        repetido, "refresca tu pantalla"): eso lo resuelve el flujo normal, no otro tiro.
+        Devuelve la respuesta con '_intentos': cada tiro con su cancha, su tiempo y su error."""
         jid = listo["jid"]
         pids = _ids_jugadores(jugadores)
-        canchas = listo.get("canchas", [])
+        canchas = list(listo.get("canchas", []))
+        reg, t0 = [], time.perf_counter()
 
-        def _ocupada(r):
-            e = json.dumps(r.get("errors", r), ensure_ascii=False).lower()
-            return ("no disponible" in e) or ("ocupada" in e) or ("no est" in e and "disponible" in e)
-
-        ultimo = None
-        for i, c in enumerate(canchas):
-            r = self.confirmar(fecha, hora_desde, hora_hasta, c["court_id"], jid,
-                               pids, single_double, telephone)
-            r["_cancha"] = c
+        def _fin(r):
             r["_canchas_ofrecidas"] = canchas
-            if r.get("status") == "success":
-                return r
-            if not _ocupada(r):
-                return r    # refresca / cupo / rechazo -> cortar, que actúe el fallback
-            ultimo = r      # ocupada en el objetivo
-            # cancha PUNTUAL ocupada -> las demás van todas juntas (no de a una)
-            if i == 0 and str(cancha_preferida or "").strip().isdigit() and len(canchas) > 1:
-                return self._confirmar_paralelo(canchas[1:], fecha, hora_desde, hora_hasta,
-                                                jid, pids, single_double, telephone, canchas)
-        return ultimo or {"status": "sin_cancha", "errors": "ninguna cancha del fuente entró"}
+            r["_intentos"] = reg
+            return r
+
+        if not canchas:
+            return _fin({"status": "sin_cancha", "errors": "la pre-carga no dejó ninguna cancha"})
+
+        def _tirar(c):
+            return self._confirmar_reg(reg, c, fecha, hora_desde, hora_hasta, jid, pids,
+                                       single_double, telephone)
+
+        r = _tirar(canchas[0])
+        if r.get("status") == "success" or not _es_ocupada(r):
+            return _fin(r)
+        ultimo = r
+        if len(canchas) == 1:
+            return _fin(ultimo)
+
+        if not str(cancha_preferida or "").strip().isdigit():
+            for c in canchas[1:]:                      # zona / cualquiera -> de a una
+                if time.perf_counter() - t0 > limite_seg:
+                    break
+                r = _tirar(c)
+                if r.get("status") == "success" or not _es_ocupada(r):
+                    return _fin(r)
+                ultimo = r
+            return _fin(ultimo)
+
+        for ronda in range(2, rondas + 1):             # cancha puntual -> insistir
+            if time.perf_counter() - t0 > limite_seg:
+                break
+            time.sleep(TICK_ESPERA)                    # que la otra punta termine de escribir
+            if ronda < rondas:
+                r = _tirar(canchas[0])                 # de nuevo la pedida, ella sola
+            else:
+                r = self._confirmar_paralelo(canchas, fecha, hora_desde, hora_hasta, jid,
+                                             pids, single_double, telephone, canchas, reg)
+            if r.get("status") == "success" or not _es_ocupada(r):
+                return _fin(r)
+            ultimo = r
+        return _fin(ultimo)
 
     # -- Listar MIS reservas activas via /player/reservation/list (JSON confiable) --
     def mis_reservas(self, dias=30):
