@@ -402,6 +402,7 @@ VENTANA_VENCIDA_SEG = 180   # si pasaron más de estos segundos desde la apertur
 MANAGER_CICLO_SEG = 12      # cada cuánto revisa el manager
 LIMPIEZA_CONFIRMADA_SEG = 3600   # una confirmada se borra sola 1 h después de la hora del turno
 CAMBIO_PROG_ANTES_SEG = 600      # el cambio de nombres programado se ejecuta 10 min antes del turno
+CAMBIO_PROG_TOLERANCIA_SEG = 300  # cuánto se le perdona de atraso antes de darlo por vencido
 BACKUP_DIR = os.path.join(AQUI, "backups")
 BACKUP_DIAS = 14                 # cuántos días de backup diario se conservan
 ARCHIVOS_DATOS = ("reservas.json", "estados.json", "db_jugadores.json",
@@ -873,17 +874,34 @@ def _revisar_cambios_prog(reservas=None):
         if not cp or cp.get("estado") != "pendiente":
             continue
         rid = rsv.get("id")
-        if get_estado(rid) != "reservada":
-            continue                       # solo tiene sentido sobre una reserva confirmada
         try:
             turno_epoch = _epoch_ar(datetime.datetime.fromisoformat(
                 f"{rsv['fecha']}T{rsv['hora_desde']}:00"))
         except (ValueError, TypeError):
             continue
-        if ahora < (cp.get("ej_epoch") or turno_epoch - CAMBIO_PROG_ANTES_SEG):
-            continue                       # todavía no es hora
-        if ahora >= turno_epoch:           # el turno ya empezó y no corrió (¿app caída?): no cambiar
+        ej_epoch = cp.get("ej_epoch") or turno_epoch - CAMBIO_PROG_ANTES_SEG
+        # el vencimiento se mira ANTES del estado: si no, el cambio de una reserva que
+        # nunca entró queda "pendiente" para siempre, prometiendo algo que no va a pasar
+        if ahora >= turno_epoch:           # el turno ya empezó: no se cambia nada
             _set_cambio_prog(rid, "vencido", "no se ejecutó a tiempo (el turno ya había empezado)")
+            continue
+        if ahora < ej_epoch:
+            continue                       # todavía no es hora
+        if get_estado(rid) != "reservada":
+            continue                       # ⚠ ÚNICA garantía de que el turno EXISTE antes de
+            # cancelarlo en OnDepor: el form ya no lo valida (se puede agendar sobre una
+            # reserva que todavía no se disparó) y cambiar_jugadores ubica el turno por
+            # fecha+club, así que sobre una reserva no tomada cancelaría OTRO turno del día
+        if ahora > ej_epoch + CAMBIO_PROG_TOLERANCIA_SEG:
+            # la reserva se confirmó DESPUÉS de la hora agendada (falló y la cazó la
+            # vigilancia, o la app estuvo caída): cancelar y volver a tomar tan cerca del
+            # turno es jugarse la cancha recién ganada. Mejor avisar y que lo hagan a mano.
+            _set_cambio_prog(rid, "vencido",
+                             "la reserva se confirmó después de la hora del cambio: "
+                             "hacelo a mano si todavía llegás")
+            notificar(cp.get("creado_por", ""), "Cambio de carnets no ejecutado",
+                      f"{rsv.get('fecha')} {rsv.get('hora_desde')}: la reserva entró tarde, "
+                      f"el cambio quedó sin hacer.")
             continue
         _set_cambio_prog(rid, "en_curso")  # marcar ANTES de largar el hilo (evita doble disparo)
         threading.Thread(target=_ejecutar_cambio_prog, args=(rid,), daemon=True).start()
@@ -1904,7 +1922,7 @@ def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False):
         if est == "reservada":
             cambiar_btn = (f'<a class="btn dark" href="{url_for("reservas")}?cambiar={j["id"]}" title="Cambiar los jugadores en OnDepor (cancela y vuelve a tomar la misma cancha)">{icon("users")} Cambiar</a>'
                            if puede_ondepor else "")
-            prog_btn = (f'<a class="btn sec" href="{url_for("reservas")}?programar={j["id"]}" title="Programar el cambio para 10 min antes del turno">{icon("clock")} Programar cambio</a>'
+            prog_btn = (f'<a class="btn sec" href="{url_for("reservas")}?programar={j["id"]}" title="Dejar agendado el cambio de carnets para antes del turno">{icon("clock")} Programar cambio</a>'
                         if puede_ondepor and not cp else "")
             borrar = (f'<form method="post" action="{url_for("reserva_borrar", rid=j["id"])}"'
                       f' onsubmit="return confirm(\'Esto CANCELA el turno en OnDepor y lo saca de la lista. ¿Seguro?\')">'
@@ -1913,6 +1931,13 @@ def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False):
             botones = cambiar_btn + prog_btn + borrar
         else:
             editar_btn = f'<a class="btn sec" href="{url_for("reservas")}?editar={j["id"]}">{icon("edit")} Editar</a>'
+            # el cambio de carnets también se puede dejar agendado ANTES de que dispare
+            # (caso típico: se reserva con carnets prestados y se devuelven después).
+            # Solo en "programada": en fallada/vencida/rota no hay nada que cambiar.
+            if est == "programada" and puede_ondepor and not cp and not j.get("problema"):
+                editar_btn += (f'<a class="btn sec" href="{url_for("reservas")}?programar={j["id"]}"'
+                               f' title="Dejar agendado el cambio de carnets para antes del turno">'
+                               f'{icon("clock")} Programar cambio</a>')
             # cazar cancelaciones: solo tiene sentido si el turno YA abrió y no entró
             vig_btn = ""
             if est in ("fallada", "vencida") or vigilando:
@@ -1960,6 +1985,12 @@ def reservas():
                      if r.get("id") == (cambiar_id or programar_id)), None)
         if not puede_cambiar_reserva(_obj):
             cambiar_id = programar_id = ""
+    # el cambio INMEDIATO solo sobre una reserva confirmada (cancela en OnDepor); el
+    # form no se abre ni forzando la URL. El programado vale también sobre "programada".
+    if cambiar_id and get_estado(cambiar_id) != "reservada":
+        cambiar_id = ""
+    if programar_id and get_estado(programar_id) not in ("reservada", "programada"):
+        programar_id = ""
     modo_cambiar = bool(cambiar_id)
     modo_programar = bool(programar_id) and not modo_cambiar
     foco_id = cambiar_id or programar_id or editar_id
@@ -2081,6 +2112,24 @@ def reservas():
           la toma su cuenta.
         </small></div>"""
     if modo_programar:
+        # ⚠ sobre una reserva que TODAVÍA NO SE DISPARÓ este form no cambia con qué
+        # nombres se toma la cancha (eso es "Editar"): agenda el reemplazo POSTERIOR.
+        # Sin este aviso los dos botones se ven iguales y hacen lo contrario.
+        aviso_no_confirmada = ""
+        if get_estado(programar_id) != "reservada":
+            # los nombres con los que se va a TOMAR la cancha: el reservador + sus 3
+            # acompañantes, tal como están hoy guardados en la reserva
+            _r = reserva_ed or {}
+            nombres_hoy = ", ".join(
+                esc(x) for x in [_r.get("reservador", "")]
+                + [nom_por_id.get(str(p), str(p)) for p in _r.get("jugadores", [])] if x)
+            aviso_no_confirmada = f"""
+        <div class="nota info" style="margin-bottom:10px">{icon('alert')}
+          La cancha se va a tomar igual con los nombres de ahora ({nombres_hoy}).
+          Acá solo dejás agendado el <b>reemplazo posterior</b> de los carnets.
+          Si lo que querés es reservar directo con otros nombres, usá
+          <a href="{url_for('reservas')}?editar={programar_id}">Editar</a>.
+        </div>"""
         # minutos antes del turno: editable; si se está editando un cambio ya
         # programado, se precargan LOS SUYOS (derivados de su ej_epoch)
         min_ini = CAMBIO_PROG_ANTES_SEG // 60
@@ -2094,6 +2143,7 @@ def reservas():
         except (ValueError, TypeError, KeyError):
             pass
         bloque_botones = f"""
+        {aviso_no_confirmada}
         <div class="row" style="align-items:flex-end">
           <div style="flex:0 0 150px"><label>Minutos antes</label>
             <input type="number" name="min_antes" id="minAntes" value="{min_ini}"
@@ -2101,6 +2151,9 @@ def reservas():
           <div style="align-self:center;padding-bottom:12px"><small class="hint">
             se ejecuta a las <b id="horaEj">…</b></small></div>
         </div>
+        <div><small class="hint">Hasta esa hora el carnet prestado sigue tomado: cuanto
+          antes corra, antes queda libre para otra reserva. Máximo 23 h (antes de eso la
+          reserva todavía no existe).</small></div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
           <button class="dark js-loader" formaction="{url_for('reserva_programar_cambio')}">{icon('clock')} Programar cambio</button>
           {cancelar_ed}
@@ -2381,14 +2434,23 @@ def _guardar_reserva_desde_form(f):
 
         remove_ids = {rid} | ({edit_orig} if edit_orig else set())
         lista = [x for x in lista if x.get("id") not in remove_ids]
-        lista.append({
+        nuevo = {
             "id": rid, "club_id": club_id, "cancha": cancha,
             "fecha": fecha, "hora_desde": hora, "hora_hasta": fin.strftime("%H:%M"),
             "single_double": single_double, "reservador": reservador,
             "jugadores": jugadores, "creado_por": creado_por, "apertura_iso": None,
             "horas_antes": 24, "minutos_extra": 1,
             "reintentos": 40, "espera_entre_reintentos_seg": 0.3,
-        })
+        }
+        # al EDITAR se rearma el objeto de cero: hay que arrastrar lo que vive aparte,
+        # o el cambio de carnets agendado (y la vigilancia) desaparecen en silencio
+        if orig_obj:
+            if orig_obj.get("vigilar"):
+                nuevo["vigilar"] = orig_obj["vigilar"]
+            cp_viejo = orig_obj.get("cambio_prog")
+            if cp_viejo:
+                nuevo["cambio_prog"] = _reencajar_cambio_prog(cp_viejo, orig_obj, nuevo)
+        lista.append(nuevo)
         guardar("reservas.json", "reservas", lista,
                 ayuda="Reservas precargadas; se disparan a la apertura (turno -24h +1min).")
     with _estados_lock:
@@ -2486,11 +2548,46 @@ def _hacer_cambio_jugadores(rsv, nuevos, nuevo_nombre):
     return st, msg
 
 
-def _validar_cambio_form(form, arg_retorno):
+def _reencajar_cambio_prog(cp, viejo, nuevo):
+    """Al editar una reserva que tenía un cambio de carnets agendado, lo conserva. Si se
+    movió la fecha o la hora del turno, corre la ejecución los MISMOS minutos antes del
+    turno nuevo (si no, quedaría agendado para una hora que ya no significa nada)."""
+    cp = dict(cp)
+    if (viejo.get("fecha"), viejo.get("hora_desde")) == (nuevo["fecha"], nuevo["hora_desde"]):
+        return cp
+    try:
+        turno_viejo = datetime.datetime.fromisoformat(
+            f"{viejo['fecha']}T{viejo['hora_desde']}:00")
+        turno_nuevo = datetime.datetime.fromisoformat(
+            f"{nuevo['fecha']}T{nuevo['hora_desde']}:00")
+        antes = _epoch_ar(turno_viejo) - int(cp.get("ej_epoch") or 0)
+        if antes <= 0:
+            return cp
+        ej_dt = turno_nuevo - datetime.timedelta(seconds=antes)
+        cp["ej_epoch"] = _epoch_ar(ej_dt)
+        cp["hora_ej"] = ej_dt.strftime("%H:%M")
+        if ej_dt.date() != turno_nuevo.date():
+            cp["hora_ej"] = enc.DIAS[ej_dt.weekday()][:3].lower() + " " + cp["hora_ej"]
+    except (ValueError, TypeError, KeyError):
+        pass
+    return cp
+
+
+def _validar_cambio_form(form, arg_retorno, estados_ok=("reservada",)):
     """Validaciones comunes de los forms de cambio (inmediato y programado).
+
+    ⚠ 'estados_ok' NO es un detalle: dice en qué estado de la reserva tiene sentido
+    ESTE form. El cambio INMEDIATO solo va sobre una reserva CONFIRMADA, porque cancela
+    y vuelve a tomar en OnDepor, y OnDepor ubica el turno por fecha+club (no por hora):
+    si la reserva todavía no se tomó, cancelaría OTRO turno del mismo día. El PROGRAMADO
+    también acepta "programada": solo queda agendado, y el ejecutor lo corre nada más si
+    para entonces la reserva está confirmada.
     Devuelve (rsv, nuevos, nuevo_nombre, None) o (None, None, None, redirect)."""
     rid = form.get(arg_retorno + "_id", "").strip()
-    nuevos = [int(x) for x in form.getlist("jug")]
+    volver = redirect(url_for("reservas") + f"?{arg_retorno}={rid}")
+    # sin basura, sin repetidos y conservando el orden (mismo criterio que el alta)
+    nuevos = list(dict.fromkeys(int(x) for x in form.getlist("jug")
+                                if str(x).strip().isdigit()))
     rsv = next((x for x in cargar("reservas.json", "reservas") if x.get("id") == rid), None)
     if not rsv:
         flash("No encontré esa reserva.")
@@ -2499,17 +2596,30 @@ def _validar_cambio_form(form, arg_retorno):
         flash("Los cambios de carnets los puede hacer quien creó la reserva "
               "(o quien tenga el permiso general).")
         return None, None, None, redirect(url_for("reservas"))
-    if get_estado(rid) != "reservada":
-        flash("Solo se pueden cambiar jugadores de una reserva ya confirmada.")
+    est = get_estado(rid)
+    if est not in estados_ok:
+        if est == "programada":
+            flash("Esta reserva todavía no se disparó: para cambiarle los nombres usá "
+                  "'Editar'.")
+        else:
+            flash(f"Esta reserva está {est.replace('_', ' ')}: no hay carnets que cambiar.")
         return None, None, None, redirect(url_for("reservas"))
-    if len(nuevos) < 3:
-        flash("Elegí 3 jugadores acompañantes.")
-        return None, None, None, redirect(url_for("reservas") + f"?{arg_retorno}={rid}")
+    jug_db = cargar("db_jugadores.json", "jugadores")
+    res_db = cargar("db_reservadores.json", "reservadores")
+    if len(nuevos) != 3:
+        flash("Elegí exactamente 3 jugadores acompañantes.")
+        return None, None, None, volver
+    # los player_id tienen que existir: esto queda GUARDADO y se ejecuta solo más tarde,
+    # y un id inventado haría que el bot cancele la cancha y no la pueda recuperar
+    conocidos = ({x.get("player_id") for x in jug_db}
+                 | {x.get("player_id") for x in res_db})
+    if not set(nuevos) <= conocidos:
+        flash("Hay jugadores que no están en la base: recargá la página y elegilos "
+              "de la lista.")
+        return None, None, None, volver
     orig_nombre = rsv.get("reservador")
     nuevo_nombre = (form.get("reservador", "") or orig_nombre).strip() or orig_nombre
     # el reservador nuevo (jugador 1) no puede estar también entre los acompañantes
-    jug_db = cargar("db_jugadores.json", "jugadores")
-    res_db = cargar("db_reservadores.json", "reservadores")
     r_nuevo = next((r for r in res_db if r.get("nombre") == nuevo_nombre), None)
     if not r_nuevo or not r_nuevo.get("clave"):
         flash("El reservador nuevo no tiene credenciales cargadas.")
@@ -2544,7 +2654,10 @@ def reserva_cambiar_jugadores():
 @app.route("/reservas/programar-cambio", methods=["POST"])
 @login_requerido
 def reserva_programar_cambio():
-    rsv, nuevos, nuevo_nombre, err = _validar_cambio_form(request.form, "programar")
+    # el programado SÍ vale sobre una reserva que todavía no se disparó: queda agendado
+    # y el ejecutor lo corre solo si para entonces la reserva está confirmada
+    rsv, nuevos, nuevo_nombre, err = _validar_cambio_form(
+        request.form, "programar", estados_ok=("reservada", "programada"))
     if err:
         return err
     rid = rsv["id"]

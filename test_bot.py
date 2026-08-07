@@ -1096,6 +1096,146 @@ class TestVincularReservadores(BaseApp):
 
 
 # ----------------------------------------------------------------------
+#  15 bis. Cambio de carnets sobre reservas que TODAVÍA NO se dispararon
+#  (los casos los sacó una revisión adversarial antes de habilitarlo)
+# ----------------------------------------------------------------------
+class TestCambioEnProgramadas(BaseApp):
+    def setUp(self):
+        self.manana = (datetime.date.today() + datetime.timedelta(days=3)).isoformat()
+        self._reserva()
+
+    def _reserva(self, cp=None):
+        obj = {"id": "prog-1", "club_id": 1102, "cancha": "3", "fecha": self.manana,
+               "hora_desde": "15:00", "hora_hasta": "16:00", "single_double": 2,
+               "reservador": "Diego Fride", "jugadores": [253510, 130962, 304064],
+               "creado_por": "Diego", "apertura_iso": None, "horas_antes": 24,
+               "minutos_extra": 1, "reintentos": 40, "espera_entre_reintentos_seg": 0.3}
+        if cp:
+            obj["cambio_prog"] = cp
+        with open(os.path.join(self.tmp, "reservas.json"), "w", encoding="utf-8") as f:
+            json.dump({"reservas": [obj]}, f, ensure_ascii=False)
+        with self.web._estados_lock:
+            self.web._estados.pop("prog-1", None)     # sin estado = "programada"
+        return obj
+
+    def _cp(self):
+        return (self.web.cargar("reservas.json", "reservas")[0] or {}).get("cambio_prog")
+
+    def test_se_puede_programar_sobre_una_no_disparada(self):
+        r = self.cliente().post("/reservas/programar-cambio", data={
+            "programar_id": "prog-1", "reservador": "Diego Fride", "min_antes": "30",
+            "jug": ["253510", "130962", "304064"]}, follow_redirects=True)
+        self.assertEqual(r.status_code, 200)
+        cp = self._cp()
+        self.assertTrue(cp, "tenía que quedar agendado sobre la reserva programada")
+        self.assertEqual(cp["hora_ej"], "14:30")
+
+    def test_el_cambio_inmediato_sigue_exigiendo_confirmada(self):
+        """CRÍTICO: cambiar_jugadores CANCELA en OnDepor y ubica el turno por fecha+club,
+        así que sobre una reserva no tomada cancelaría OTRO turno del mismo día."""
+        r = self.cliente().post("/reservas/cambiar-jugadores", data={
+            "cambiar_id": "prog-1", "reservador": "Diego Fride",
+            "jug": ["253510", "130962", "304064"]}, follow_redirects=True)
+        self.assertIn("todavía no se disparó", r.get_data(as_text=True))
+
+    def test_el_form_inmediato_no_se_abre_ni_forzando_la_url(self):
+        h = self.cliente().get("/reservas?cambiar=prog-1").get_data(as_text=True)
+        self.assertNotIn("cambiar_id", h)
+
+    def test_editar_la_reserva_no_borra_el_cambio_agendado(self):
+        """CRÍTICO: _guardar_reserva_desde_form rearma el objeto de cero. Sin arrastrar
+        el cambio_prog, editar la reserva lo hacía desaparecer en silencio."""
+        self.cliente().post("/reservas/programar-cambio", data={
+            "programar_id": "prog-1", "reservador": "Diego Fride", "min_antes": "30",
+            "jug": ["253510", "130962", "304064"]}, follow_redirects=True)
+        self.assertTrue(self._cp())
+        # ahora edita la reserva moviéndola una hora más tarde
+        self.cliente().post("/reservas/crear", data={
+            "edit_orig": "prog-1", "sede": "dia", "fecha": self.manana, "hora": "16:00",
+            "reservador": "Diego Fride", "cancha": "3",
+            "jug": ["253510", "130962", "304064"]}, follow_redirects=True)
+        rsv = self.web.cargar("reservas.json", "reservas")[0]
+        cp = rsv.get("cambio_prog")
+        self.assertTrue(cp, "el cambio agendado se perdió al editar")
+        self.assertEqual(cp["hora_ej"], "15:30",
+                         "tenía que seguir corriendo 30 min antes del turno NUEVO")
+
+    def test_un_cambio_de_una_reserva_que_nunca_entro_se_marca_vencido(self):
+        """Antes quedaba 'pendiente' para siempre, prometiendo algo que no iba a pasar."""
+        ayer = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        with open(os.path.join(self.tmp, "reservas.json"), "w", encoding="utf-8") as f:
+            json.dump({"reservas": [{
+                "id": "vieja", "club_id": 1102, "cancha": "", "fecha": ayer,
+                "hora_desde": "15:00", "hora_hasta": "16:00", "reservador": "Diego Fride",
+                "jugadores": [253510, 130962, 304064], "creado_por": "Diego",
+                "cambio_prog": {"estado": "pendiente", "reservador": "Diego Fride",
+                                "jugadores": [1, 2, 3], "ej_epoch": 1}}]}, f)
+        self.web._revisar_cambios_prog()
+        cp = self.web.cargar("reservas.json", "reservas")[0]["cambio_prog"]
+        self.assertEqual(cp["estado"], "vencido")
+
+    def test_no_dispara_si_la_reserva_se_confirmo_tarde(self):
+        """Si entró recién DESPUÉS de la hora agendada (la cazó la vigilancia), cancelar
+        y volver a tomar es jugarse la cancha recién ganada: se marca vencido y avisa."""
+        ahora = self.core.hora_real()
+        turno = ahora + 3600                      # el turno todavía no empezó
+        with open(os.path.join(self.tmp, "reservas.json"), "w", encoding="utf-8") as f:
+            json.dump({"reservas": [{
+                "id": "tarde", "club_id": 1102, "cancha": "", "fecha": self.manana,
+                "hora_desde": "15:00", "hora_hasta": "16:00", "reservador": "Diego Fride",
+                "jugadores": [253510, 130962, 304064], "creado_por": "Diego",
+                "cambio_prog": {"estado": "pendiente", "reservador": "Diego Fride",
+                                "jugadores": [1, 2, 3],
+                                "ej_epoch": ahora - 3600}}]}, f)   # 1 h de atraso
+        with self.web._estados_lock:
+            self.web._estados["tarde"] = {"estado": "reservada"}
+        disparos = []
+        orig = self.web._ejecutar_cambio_prog
+        self.web._ejecutar_cambio_prog = lambda rid: disparos.append(rid)
+        try:
+            rsv = self.web.cargar("reservas.json", "reservas")[0]
+            rsv["fecha"], rsv["hora_desde"] = self.manana, "15:00"
+            self.web._revisar_cambios_prog()
+        finally:
+            self.web._ejecutar_cambio_prog = orig
+            with self.web._estados_lock:
+                self.web._estados.pop("tarde", None)
+        self.assertEqual(disparos, [], "no tenía que ejecutar el cambio con tanto atraso")
+        self.assertEqual(self.web.cargar("reservas.json", "reservas")[0]["cambio_prog"]["estado"],
+                         "vencido")
+
+    def test_no_acepta_jugadores_inventados_ni_repetidos(self):
+        """Esto queda GUARDADO y se ejecuta solo: un id inventado haría que el bot
+        cancele la cancha y después no la pueda recuperar."""
+        self.cliente().post("/reservas/programar-cambio", data={
+            "programar_id": "prog-1", "reservador": "Diego Fride", "min_antes": "30",
+            "jug": ["999999", "888888", "777777"]}, follow_redirects=True)
+        self.assertIsNone(self._cp(), "aceptó player_ids que no existen")
+        self.cliente().post("/reservas/programar-cambio", data={
+            "programar_id": "prog-1", "reservador": "Diego Fride", "min_antes": "30",
+            "jug": ["253510", "253510", "253510"]}, follow_redirects=True)
+        self.assertIsNone(self._cp(), "aceptó el mismo jugador 3 veces")
+
+    def test_el_boton_aparece_en_programadas_pero_no_en_falladas(self):
+        h = self.cliente().get("/reservas").get_data(as_text=True)
+        self.assertIn("?programar=prog-1", h)
+        self.assertNotIn("?cambiar=prog-1", h, "el cambio inmediato no va en una no disparada")
+        with self.web._estados_lock:
+            self.web._estados["prog-1"] = {"estado": "fallada"}
+        try:
+            h2 = self.cliente().get("/reservas").get_data(as_text=True)
+            self.assertNotIn("?programar=prog-1", h2, "en una fallada no hay nada que cambiar")
+        finally:
+            with self.web._estados_lock:
+                self.web._estados.pop("prog-1", None)
+
+    def test_el_form_avisa_que_la_reserva_se_toma_con_los_nombres_de_hoy(self):
+        h = self.cliente().get("/reservas?programar=prog-1").get_data(as_text=True)
+        self.assertIn("se va a tomar igual con los nombres de ahora", h)
+        self.assertIn("?editar=prog-1", h, "tiene que ofrecer Editar como alternativa")
+
+
+# ----------------------------------------------------------------------
 #  16. Huella (WebAuthn) — mismo esquema que el Jalomi Manager
 # ----------------------------------------------------------------------
 class TestHuella(BaseApp):
