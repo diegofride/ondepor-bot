@@ -3401,7 +3401,7 @@ def _fijas_de(datos):
     return fijas or None
 
 
-def _selector_canchas(plan, fijas):
+def _selector_canchas(plan, fijas, desde_cero=False):
     """Una fila por día con un selector por horario: 'auto' o cuántas canchas querés.
     El armador respeta lo que fijes y resuelve el resto."""
     por_dia = {}
@@ -3409,6 +3409,7 @@ def _selector_canchas(plan, fijas):
         por_dia.setdefault(d, []).append((h, cmax))
     if not por_dia:
         return ""
+    cero_chk = " checked" if desde_cero else ""
     filas = ""
     for d, horas in sorted(por_dia.items()):
         cel = ""
@@ -3428,6 +3429,10 @@ def _selector_canchas(plan, fijas):
       <p><small class="hint">En <b>auto</b> lo decide el armador. Si ponés un número, se
          respeta y el resto se acomoda alrededor; si no entran, te avisa cuántas sí.</small></p>
       <form method="get" action="{url_for('encuesta_cronograma')}">{filas}
+        <label style="display:flex;gap:8px;align-items:center;margin:10px 0">
+          <input type="checkbox" name="cero" value="1"{cero_chk} onchange="this.form.submit()">
+          <small class="hint">Armarlo <b>desde cero</b>, sin mirar las reservas que ya
+            están cargadas (por defecto se respetan: sus carnets están comprometidos)</small></label>
         <noscript><button class="sec">Recalcular</button></noscript>
         <a class="btn sec" href="{url_for('encuesta_cronograma')}">Volver a auto</a>
       </form>
@@ -3475,7 +3480,8 @@ def encuesta_cronograma():
         flash("Primero abrí una encuesta.")
         return redirect(url_for("encuesta_panel"))
     fijas = _fijas_de(request.args)
-    plan = enc.armar_cronograma(e, fijas)
+    desde_cero = bool(request.args.get("cero"))
+    plan = enc.armar_cronograma(e, fijas, desde_cero)
 
     bloques, orden = {}, []
     for rsv in plan["reservas"]:
@@ -3530,6 +3536,8 @@ def encuesta_cronograma():
         ocultos = "".join(
             f'<input type="hidden" name="f{d}_{h}" value="{c}">'
             for (d, h), c in (fijas or {}).items())
+        if desde_cero:
+            ocultos += '<input type="hidden" name="cero" value="1">'
         boton = f"""
       <form method="post" action="{url_for('encuesta_cronograma_programar')}"
             onsubmit="return confirm('¿Programar {txt}? Cada reserva se dispara sola a su apertura.')">
@@ -3544,7 +3552,7 @@ def encuesta_cronograma():
          Nada se programa hasta que toques el botón de abajo.</small></p>
       {extras}
     </div>
-    {_selector_canchas(plan, fijas)}
+    {_selector_canchas(plan, fijas, desde_cero)}
     {cuerpo_bloques}
     <div class="card">
       {boton}
@@ -3562,7 +3570,8 @@ def encuesta_cronograma_programar():
     e = enc.cargar_encuesta()
     if not e:
         return redirect(url_for("encuesta_panel"))
-    plan = enc.armar_cronograma(e, _fijas_de(request.form))
+    plan = enc.armar_cronograma(e, _fijas_de(request.form),
+                                bool(request.form.get("cero")))
     if any("VERIFICACIÓN" in a for r in plan["reservas"] for a in r["avisos"]):
         flash("La verificación encontró un error en el plan: no se programó nada.")
         return redirect(url_for("encuesta_cronograma"))

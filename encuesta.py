@@ -619,13 +619,14 @@ def reservas_existentes():
     return tramos
 
 
-def armar_cronograma(e, fijas=None):
+def armar_cronograma(e, fijas=None, desde_cero=False):
     """Arma el flujo de reservas del finde entero (modelo de Darío/Diego, ver
     ARMADOR_CRONOGRAMA.md). Reparte los CARNETS; jugar y tener el carnet en la reserva
     son cosas distintas (el que votó una hora la juega aunque su carnet esté en otra
     reserva: rota).
 
-    'fijas' = {(día, "HH:MM"): cuántas canchas} para MANDAR a mano cuántas canchas va
+    'desde_cero' ignora las reservas que ya están cargadas (por defecto se respetan:
+    sus carnets están comprometidos). 'fijas' = {(día, "HH:MM"): cuántas canchas} para MANDAR a mano cuántas canchas va
     cada horario (pedido de Diego: "quiero 2 a las 15 y 2 a las 16"). Lo que no venga
     fijado lo decide el optimizador, que elige el plan con más canchas, después el que
     hace jugar a más gente distinta, y recién ahí desempata por la prioridad
@@ -633,7 +634,7 @@ def armar_cronograma(e, fijas=None):
     """
     r = resumen_votos(e)
     reservadores, sin_vincular = reservadores_con_carnet()
-    a = _Armador(e, r, reservadores, fijas)
+    a = _Armador(e, r, reservadores, fijas, desde_cero)
     plan = a.mejor_plan()
     verificar_plan(plan["reservas"], r, e)
     plan.update({"resumen": r, "sin_vincular": sin_vincular,
@@ -642,10 +643,12 @@ def armar_cronograma(e, fijas=None):
 
 
 class _Armador:
-    def __init__(self, e, r, cuentas, fijas=None):
+    def __init__(self, e, r, cuentas, fijas=None, desde_cero=False):
         self.e, self.r, self.cuentas = e, r, cuentas
         self.fijas = {(int(d), str(h)): int(c) for (d, h), c in (fijas or {}).items()}
-        self.ya_tomados = reservas_existentes()
+        # 'desde_cero' = armar el finde ignorando las reservas ya cargadas (para
+        # comparar contra un cronograma hecho a mano, o para rehacerlo de nuevo)
+        self.ya_tomados = [] if desde_cero else reservas_existentes()
         self.dias = list(e.get("dias", DIAS_POR_DEFECTO))
         self.fechas = e.get("fechas", {})
         # por día: [(hora, votantes, canchas_max)] en orden cronológico
@@ -919,12 +922,16 @@ class _Armador:
         piso = min(turno.replace(hour=HORA_MIN_CAMBIO, minute=0),
                    turno - datetime.timedelta(minutes=30))
         if forzados:
+            # APENAS SE PUEDA: en cuanto se libera el último que entra. Para una cancha
+            # del domingo eso suele caer el sábado a la tarde, y está bien: libera el
+            # carnet del que la pisó (pedido de Diego).
             libres_en = [agenda.libre_desde(club, p, turno, apertura) for p in forzados]
-            cambio_dt = max(max(libres_en) + datetime.timedelta(seconds=MARGEN_CAMBIO_SEG),
-                            piso)
+            cambio_dt = max(libres_en) + datetime.timedelta(seconds=MARGEN_CAMBIO_SEG)
             if cambio_dt >= turno:
                 return None                    # los que entran no se liberan a tiempo
         else:
+            # ya están todos libres: no hay apuro, y hacerlo apenas se reserva sería
+            # cancelar y volver a tomar la cancha recién ganada. Va el día del turno.
             cambio_dt = piso
 
         prestados = [p for p in self._pool_prestados(d)

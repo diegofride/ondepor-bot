@@ -936,14 +936,15 @@ class TestCronograma(BaseApp):
         self.assertTrue({x["id"] for x in r["titulares"]} <= prestan)
         self.assertIsNotNone(r["cambio"])
         # el sáb 15:00 termina 16:00: el cambio va un rato después, no a las 9:50 del dom
-        # el cambio va el DÍA DEL TURNO (nunca el día anterior: cancelar y volver a
-        # tomar la cancha recién ganada es devolverla al ruedo en el peor momento)
+        # el cambio va APENAS SE LIBERA el último que entra: los del sábado terminan a
+        # las 16:00, así que cae el sábado a la tarde (eso libera el carnet del que pisó).
+        # Lo que NO puede es caer apenas se reserva la cancha (ver test del piso).
         cambio = datetime.datetime.fromtimestamp(
             r["cambio"]["epoch"], datetime.timezone.utc) + datetime.timedelta(hours=-3)
         cambio = cambio.replace(tzinfo=None)
-        turno = datetime.datetime.fromisoformat(f"{self.dom}T10:00:00")
-        self.assertEqual(cambio.date(), turno.date(), "el cambio no puede ser el día antes")
-        self.assertLess(cambio, turno)
+        fin_sab = datetime.datetime.fromisoformat(f"{self.sab}T16:00:00")
+        self.assertEqual(cambio - fin_sab, datetime.timedelta(seconds=enc.MARGEN_CAMBIO_SEG),
+                         "tenía que correr apenas se liberan los del sábado")
         juegan = {str(self.pid[n]) for n in NOMBRES_TEST[:8]}
         self.assertTrue({x["id"] for x in r["juegan"]} <= juegan,
                         "después del cambio, en la cancha están los que votaron esa hora")
