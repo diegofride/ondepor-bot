@@ -174,6 +174,16 @@ class TestCanchas(BaseApp):
         hay = any(self.core.OnDepor._cancha_coincide(c, "1") for c in sin_la_1)
         self.assertFalse(hay, "creía que la cancha 1 estaba en la lista")
 
+    def test_detecta_la_cancha_tambien_con_precarga(self):
+        """La app leía la cancha del log buscando "(OK)" exacto, pero las reservas que
+        entran por pre-carga escriben "(OK, pre-carga)": mostraba "(no se sabe)"."""
+        import os
+        os.makedirs(os.path.join(self.tmp, "logs"), exist_ok=True)
+        rid = "log-precarga"
+        with open(os.path.join(self.tmp, "logs", rid + ".log"), "w", encoding="utf-8") as f:
+            f.write("  RESERVA CONFIRMADA (OK, pre-carga)  cancha=01-QUINTA  ok\n")
+        self.assertEqual(self.web.cancha_reservada(rid), "01-QUINTA")
+
     def test_ordenar_no_pierde_ni_duplica_canchas(self):
         for pref in ("6", "KINERET", "", "99"):
             orden = self.core.OnDepor.ordenar_canchas(self.C, pref)
@@ -1268,6 +1278,39 @@ class TestCronograma(BaseApp):
         self.assertFalse(usados & {str(self.pid[n]) for n in ocupados},
                          "usó un carnet que ya estaba en una reserva cargada")
         self.assertTrue(self._sin_errores_de_verificacion(plan))
+
+    def test_mensaje_para_whatsapp(self):
+        """El botón arma el texto con las canchas REALES del finde (no la propuesta), y
+        cuando hay un cambio de carnets agendado lista a los que van a jugar DESPUÉS."""
+        import encuesta as enc
+        self._encuesta({n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]}}
+                        for n in NOMBRES_TEST[:4]})
+        self._W("reservas.json", {"reservas": [{
+            "id": "m-1", "club_id": 1102, "cancha": "3", "fecha": self.sab,
+            "hora_desde": "15:00", "hora_hasta": "16:00", "single_double": 2,
+            "reservador": "Ana", "jugadores": [self.pid[n] for n in NOMBRES_TEST[1:4]],
+            "creado_por": "Diego",
+            "cambio_prog": {"estado": "pendiente", "reservador": "Dario",
+                            "jugadores": [self.pid[n] for n in NOMBRES_TEST[4:7]],
+                            "hora_ej": "14:00", "ej_epoch": 1}}]})
+        c = self.cliente()
+        r = c.get("/encuesta/mensaje")
+        self.assertEqual(r.status_code, 200)
+        h = r.get_data(as_text=True)
+        self.assertIn("Canchas del finde", h)
+        self.assertIn("15:00", h)
+        # los del cambio, no los originales
+        self.assertIn(NOMBRES_TEST[4], h)
+        self.assertNotIn("&gt;" + NOMBRES_TEST[1], h)
+        with self.web.app.test_request_context():
+            txt = self.web._mensaje_finde(self.web.enc.cargar_encuesta())
+        self.assertIn("Dario", txt)
+        self.assertNotIn("Beto", txt, "listó a los originales en vez de los del cambio")
+        self.assertIn("(a confirmar)", txt, "esa reserva todavía no se disparó")
+
+    def test_el_mensaje_pide_permiso(self):
+        r = self.cliente("pablo", "clave2").get("/encuesta/mensaje", follow_redirects=True)
+        self.assertIn("No tenés permiso", r.get_data(as_text=True))
 
     def test_sin_permiso_no_se_programa(self):
         import encuesta as enc

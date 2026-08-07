@@ -568,7 +568,9 @@ def cancha_reservada(rid, txt=None):
     """En qué cancha ENTRÓ finalmente la reserva (ej '05-KINERET'), o '' si no se sabe.
     'txt' opcional = contenido del log ya leído (para no releer el archivo)."""
     txt = _leer_log(rid) if txt is None else txt
-    ms = re.findall(r"RESERVA CONFIRMADA \(OK\)\s+cancha=(\S+)", txt)
+    # ⚠ acepta "(OK)" y "(OK, pre-carga)": con pre-carga la app no detectaba la cancha
+    # y mostraba "(no se sabe)" aunque el log la tuviera
+    ms = re.findall(r"RESERVA CONFIRMADA \(OK[^)]*\)\s+cancha=(\S+)", txt)
     return ms[-1].strip("*") if ms else ""
 
 
@@ -3489,6 +3491,99 @@ def _tarjeta_reserva(rsv):
       <div class="meta">{tit}</div>{lineas}</div>"""
 
 
+def _mensaje_finde(e):
+    """Texto listo para pegar en WhatsApp con cómo quedaron las canchas del finde.
+
+    Sale de las reservas REALES (reservas.json), no de la propuesta: es lo que hay que
+    avisarle al grupo. Si una reserva tiene un cambio de carnets agendado, se listan los
+    que van a jugar DESPUÉS del cambio, que son los que importan."""
+    fechas = [f for f in (e.get("fechas") or {}).values()]
+    nom = {str(x.get("player_id")): x.get("nombre")
+           for x in cargar("db_jugadores.json", "jugadores") if x.get("player_id")}
+    for x in cargar("db_reservadores.json", "reservadores"):
+        if x.get("player_id"):
+            nom.setdefault(str(x["player_id"]), x.get("nombre"))
+
+    filas = []
+    for r in cargar("reservas.json", "reservas"):
+        if fechas and r.get("fecha") not in fechas:
+            continue
+        est = get_estado(r.get("id"))
+        if est in ("fallada", "vencida"):
+            continue
+        cp = r.get("cambio_prog") or {}
+        if cp.get("estado") in ("pendiente", "en_curso", "hecho"):
+            quienes = [cp.get("reservador", "")] + [nom.get(str(p), str(p))
+                                                    for p in cp.get("jugadores", [])]
+        else:
+            quienes = [r.get("reservador", "")] + [nom.get(str(p), str(p))
+                                                   for p in r.get("jugadores", [])]
+        real = cancha_reservada(r["id"]) or ""
+        if real:                                  # la que entró de verdad
+            n = real.split("-")[0].lstrip("0")
+            cancha = f"cancha {n}" + (f" ({real.split('-', 1)[1]})" if "-" in real else "")
+        elif str(r.get("cancha") or "").strip().isdigit():
+            cancha = "cancha " + desc_cancha(r["cancha"])
+        elif str(r.get("cancha") or "").strip():
+            cancha = desc_cancha(r["cancha"])     # "zona KINERET"
+        else:
+            cancha = "cancha a definir"
+        orden = int(real.split("-")[0]) if real[:2].isdigit() else 99
+        filas.append((r["fecha"], r["hora_desde"], orden, cancha,
+                      [q for q in quienes if q], est))
+
+    if not filas:
+        return "🎾 Todavía no hay ninguna cancha reservada para este finde."
+
+    filas.sort()
+    partes = [f"🎾 *Canchas del finde*"]
+    dia_actual = None
+    for fecha, hora, _o, cancha, quienes, est in filas:
+        if fecha != dia_actual:
+            dia_actual = fecha
+            d = datetime.date.fromisoformat(fecha)
+            partes.append(f"\n*{enc.DIAS[d.weekday()].upper()} {d.strftime('%d/%m')}*")
+        pend = "" if est == "reservada" else "  (a confirmar)"
+        partes.append(f"• {hora[:5]} · {cancha}{pend}")
+        partes.append(f"   {', '.join(quienes)}")
+    return "\n".join(partes)
+
+
+@app.route("/encuesta/mensaje")
+@permiso_requerido("encuesta")
+def encuesta_mensaje():
+    """Pantalla con el mensaje del finde listo para copiar o mandar por WhatsApp."""
+    from urllib.parse import quote
+    e = enc.cargar_encuesta() or {}
+    texto = _mensaje_finde(e)
+    cuerpo = f"""
+    <div class="card">
+      <h2>{icon('list')} Mensaje para el grupo</h2>
+      <p><small class="hint">Cómo quedaron las canchas del finde, listo para pegar en
+         WhatsApp. Si alguna reserva todavía no se disparó, va marcada como
+         «a confirmar».</small></p>
+      <textarea id="msj" rows="14" readonly onclick="this.select()"
+                style="width:100%;font-family:inherit;font-size:.95rem;line-height:1.5"
+                >{esc(texto)}</textarea>
+      <div style="margin-top:10px">
+        <button type="button" onclick="copiar(this)">{icon('save')} Copiar</button>
+        <a class="btn dark" target="_blank" rel="noopener"
+           href="https://wa.me/?text={quote(texto)}">Compartir por WhatsApp</a>
+        <a class="btn sec" href="{url_for('encuesta_cronograma')}">Volver</a>
+      </div>
+    </div>
+    <script>
+    function copiar(b){{
+      var t=document.getElementById('msj'); t.select(); t.setSelectionRange(0,99999);
+      navigator.clipboard.writeText(t.value).then(function(){{
+        var x=b.textContent; b.textContent='¡Copiado!';
+        setTimeout(function(){{b.textContent=x;}},1500);
+      }});
+    }}
+    </script>"""
+    return pagina("Mensaje", "encuesta", cuerpo)
+
+
 @app.route("/encuesta/cronograma")
 @permiso_requerido("encuesta")
 def encuesta_cronograma():
@@ -3582,6 +3677,7 @@ def encuesta_cronograma():
     {cuerpo_bloques}
     <div class="card">
       {boton}
+      <a class="btn dark" href="{url_for('encuesta_mensaje')}">{icon('list')} Mensaje para WhatsApp</a>
       <a class="btn sec" href="{url_for('encuesta_panel')}">Volver a la encuesta</a>
     </div>"""
     return pagina("Cronograma", "encuesta", cuerpo)

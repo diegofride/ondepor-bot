@@ -556,12 +556,12 @@ class OnDepor:
     # -- CAMBIAR JUGADORES de una reserva confirmada (cancelar + volver a tomar) --
     def cambiar_jugadores(self, fecha, club_id, hora_desde, hora_hasta,
                           nuevos_players, viejos_players, single_double=2, telephone="",
-                          api_nuevo=None, telephone_nuevo=""):
+                          api_nuevo=None, telephone_nuevo="", cancha_nueva=""):
         """Cambia los jugadores (y opcionalmente el RESERVADOR) de una reserva YA confirmada.
         'self' es el reservador ORIGINAL (dueño, el que puede cancelar). Si 'api_nuevo' se
         pasa, la reserva nueva la toma ESE reservador (login distinto); si no, la re-toma self.
-        Flujo: ubica la reserva -> CANCELA (con self) -> RE-TOMA la misma cancha con los
-        nuevos (con api_nuevo o self). Red de seguridad: si no entra, self recupera la
+        Flujo: ubica la reserva -> CANCELA (con self) -> RE-TOMA con los nuevos (con
+        api_nuevo o self) en la misma cancha, o en 'cancha_nueva' si se pide mudarla. Red de seguridad: si no entra, self recupera la
         reserva ORIGINAL (reservador y jugadores viejos).
         Devuelve {status, mensaje}. status: success / revertida / perdida / no_encontrada / fallo_cancelar."""
         api_rebook = api_nuevo or self          # quién TOMA la reserva nueva
@@ -577,7 +577,10 @@ class OnDepor:
             return {"status": "no_encontrada",
                     "mensaje": "No encontré la reserva confirmada en OnDepor (¿ya no existe?). No cancelé nada."}
         rid = match["id"]
-        cancha_pref = match.get("cancha_num") or ""   # re-tomar la MISMA cancha
+        cancha_pref = match.get("cancha_num") or ""   # la cancha que tiene HOY
+        # 'cancha_nueva' permite mudar la reserva a OTRA cancha (ej: entró en la 10 y se
+        # quería la 1). La red de seguridad sigue recuperando la cancha ORIGINAL.
+        cancha_rebook = str(cancha_nueva or "").strip() or cancha_pref
 
         # 2) precalentar: registrar los jugadores nuevos en la sesión que va a RE-TOMAR
         for pid in nuevos_players:
@@ -595,7 +598,7 @@ class OnDepor:
         # 4) RE-TOMAR la misma cancha con el reservador/jugadores NUEVOS
         for _ in range(4):
             rb = api_rebook.reservar(fecha, hora_desde, hora_hasta, nuevos_players,
-                                     cancha_preferida=cancha_pref, single_double=single_double,
+                                     cancha_preferida=cancha_rebook, single_double=single_double,
                                      telephone=tel_rebook)
             if rb.get("status") == "success":
                 return {"status": "success", "cancha": (rb.get("_cancha") or {}).get("nombre", ""),
