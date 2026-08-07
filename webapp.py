@@ -3388,6 +3388,23 @@ def _plural(n, singular, plural):
     return f"{n} {singular if n == 1 else plural}"
 
 
+def _cfg_cronograma(e):
+    """Lo último que el admin dejó armado (canchas por horario + desde cero)."""
+    cfg = e.get("cronograma_cfg") or {}
+    fijas = {}
+    for k, c in (cfg.get("fijas") or {}).items():
+        d, _, h = str(k).partition("_")
+        if d.isdigit():
+            fijas[(int(d), h)] = int(c)
+    return (fijas or None), bool(cfg.get("cero"))
+
+
+def _guardar_cfg_cronograma(e, fijas, desde_cero):
+    e["cronograma_cfg"] = {"fijas": {f"{d}_{h}": c for (d, h), c in (fijas or {}).items()},
+                           "cero": bool(desde_cero)}
+    enc.guardar_encuesta(e)
+
+
 def _fijas_de(datos):
     """Cuántas canchas mandó a mano el admin para cada horario, del form/querystring:
     campos "f<día>_<HH:MM>" con "" = que decida el armador."""
@@ -3434,7 +3451,7 @@ def _selector_canchas(plan, fijas, desde_cero=False):
           <small class="hint">Armarlo <b>desde cero</b>, sin mirar las reservas que ya
             están cargadas (por defecto se respetan: sus carnets están comprometidos)</small></label>
         <noscript><button class="sec">Recalcular</button></noscript>
-        <a class="btn sec" href="{url_for('encuesta_cronograma')}">Volver a auto</a>
+        <a class="btn sec" href="{url_for('encuesta_cronograma')}?reset=1">Volver a auto</a>
       </form>
     </div>"""
 
@@ -3479,8 +3496,17 @@ def encuesta_cronograma():
     if not e:
         flash("Primero abrí una encuesta.")
         return redirect(url_for("encuesta_panel"))
-    fijas = _fijas_de(request.args)
-    desde_cero = bool(request.args.get("cero"))
+    # La configuración QUEDA GUARDADA en la encuesta: si no, la pantalla abría siempre
+    # en automático y mostraba algo distinto de lo último que se había armado.
+    if request.args.get("reset"):
+        fijas, desde_cero = None, False
+        _guardar_cfg_cronograma(e, fijas, desde_cero)
+    elif request.args:
+        fijas = _fijas_de(request.args)
+        desde_cero = bool(request.args.get("cero"))
+        _guardar_cfg_cronograma(e, fijas, desde_cero)
+    else:
+        fijas, desde_cero = _cfg_cronograma(e)
     plan = enc.armar_cronograma(e, fijas, desde_cero)
 
     bloques, orden = {}, []
@@ -3570,8 +3596,12 @@ def encuesta_cronograma_programar():
     e = enc.cargar_encuesta()
     if not e:
         return redirect(url_for("encuesta_panel"))
-    plan = enc.armar_cronograma(e, _fijas_de(request.form),
-                                bool(request.form.get("cero")))
+    fijas_post = _fijas_de(request.form)
+    if fijas_post is None and not request.form.get("cero"):
+        fijas_post, cero_post = _cfg_cronograma(e)      # lo último que se dejó armado
+    else:
+        cero_post = bool(request.form.get("cero"))
+    plan = enc.armar_cronograma(e, fijas_post, cero_post)
     if any("VERIFICACIÓN" in a for r in plan["reservas"] for a in r["avisos"]):
         flash("La verificación encontró un error en el plan: no se programó nada.")
         return redirect(url_for("encuesta_cronograma"))
