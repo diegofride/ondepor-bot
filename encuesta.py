@@ -680,8 +680,13 @@ class _Armador:
         st["usados"] = foto[3]
 
     def _puntaje(self, st):
-        """Más canchas totales primero; la prioridad de Diego desempata:
-        sáb tarde → dom mañana → sáb mañana → dom tarde."""
+        """Qué plan es mejor, en orden:
+          1. más canchas;
+          2. más GENTE DISTINTA que llega a jugar (dos planes con las mismas canchas
+             no son iguales: el que deja a alguien afuera del finde entero es peor);
+          3. más lugares de cancha jugados (el que juega dos veces suma);
+          4. la prioridad de Diego: sáb tarde → dom mañana → sáb mañana → dom tarde.
+        """
         a = st["armadas"]
         d1 = self.dias[0]
         d2 = self.dias[1] if len(self.dias) > 1 else None
@@ -690,7 +695,13 @@ class _Armador:
                 return 0
             return sum(c for (dd, h), c in a.items()
                        if dd == d and ES_MANANA(h) == (fr == "m"))
-        return (sum(a.values()), suma(d1, "t"), suma(d2, "m"), suma(d1, "m"), suma(d2, "t"))
+        gente, lugares = set(), 0
+        for rsv in st["reservas"]:
+            ids = {x["id"] for x in rsv["juegan"]}
+            gente |= ids
+            lugares += len(ids)
+        return (sum(a.values()), len(gente), lugares,
+                suma(d1, "t"), suma(d2, "m"), suma(d1, "m"), suma(d2, "t"))
 
     # ------------------------------------------------------------------
     def _armar_turno(self, st, d, hora, canchas, con_avisos=True):

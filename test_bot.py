@@ -1022,6 +1022,69 @@ class TestCronograma(BaseApp):
             with self.web._estados_lock:
                 self.web._estados.pop("mc-1", None)
 
+    def test_la_regla_del_carnet_es_una_reserva_activa(self):
+        """REFERENCIA (cronograma que armó Diego a mano, sábado 08/08). La regla es UNA
+        reserva activa por carnet: se libera cuando TERMINA el turno (o cuando un cambio
+        lo saca antes) y se puede reusar EL MISMO DÍA. Su cadena real era:
+          15:00 cancha 11 (Farji, Afh, Woslawski, Juaya) termina 16:00
+          → 16:10 esos mismos 4 entran a la cancha 10 de las 17:00
+        y en paralelo, dos turnos que se reservan el MISMO viernes no pueden compartir
+        ningún carnet, porque a esa altura todavía no se liberó nada."""
+        import encuesta as enc
+        ag = enc._Agenda()
+        club = 1102
+        d = lambda h, m=0, dia=8: datetime.datetime(2026, 8, dia, h, m)
+
+        # la cancha de las 15 se toma el viernes 15:01 y el turno termina sáb 16:00
+        ag.ocupar(club, "farji", d(15, 1, 7), d(16))
+        # a las 16:10 el mismo carnet entra al turno de las 17: TIENE que poder
+        self.assertTrue(ag.libre(club, "farji", d(16, 10), d(18)),
+                        "el carnet se libera al terminar el turno y se reusa el mismo día")
+        ag.ocupar(club, "farji", d(16, 10), d(18))
+
+        # pero la cancha de las 17 se TOMA el viernes 17:01, cuando su carnet sigue
+        # adentro de la de las 15: por eso hay que pisarla con otro
+        self.assertFalse(ag.libre(club, "farji", d(17, 1, 7), d(18)),
+                         "el viernes su carnet todavía está en la reserva de las 15")
+
+        # y no puede estar en dos turnos que se solapan
+        self.assertFalse(ag.libre(club, "farji", d(17, 30), d(18, 30)))
+
+    def test_el_plan_siempre_pasa_su_propia_verificacion(self):
+        """Guarda de fondo: se arme lo que se arme, ningún carnet puede quedar en dos
+        reservas que se pisen ni entrar alguien que no votó esa hora."""
+        import encuesta as enc
+        votos = {}
+        for i, n in enumerate(NOMBRES_TEST):
+            if i < 10:
+                votos[n] = {"5": {"modo": enc.MODO_JUEGO,
+                                  "horas": ["10:00", "15:00", "16:00", "17:00"]},
+                            "6": {"modo": enc.MODO_JUEGO, "horas": ["10:00", "16:00"]}}
+            else:
+                votos[n] = {"5": {"modo": enc.MODO_PRESTA}, "6": {"modo": enc.MODO_PRESTA}}
+        plan = enc.armar_cronograma(self._encuesta(votos))
+        self.assertTrue(plan["reservas"], "con 10 jugadores tendría que salir algo")
+        self.assertTrue(self._sin_errores_de_verificacion(plan),
+                        [a for r in plan["reservas"] for a in r["avisos"]])
+        # y todos los que quedan en la cancha votaron ESA hora
+        r0 = plan["resumen"]["por_dia"]
+        for rsv in plan["reservas"]:
+            votantes = set(r0[rsv["dia"]]["por_hora_ids"].get(rsv["hora"], []))
+            self.assertTrue({x["id"] for x in rsv["juegan"]} <= votantes)
+
+    def test_prefiere_el_plan_donde_juega_mas_gente(self):
+        """Dos planes con las mismas canchas no son iguales: gana el que deja a menos
+        gente afuera del finde."""
+        import encuesta as enc
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00", "16:00"]}}
+                 for n in NOMBRES_TEST[:8]}
+        votos[NOMBRES_TEST[8]] = {"5": {"modo": enc.MODO_JUEGO, "horas": ["16:00"]}}
+        votos.update({n: {"5": {"modo": enc.MODO_PRESTA}} for n in NOMBRES_TEST[9:]})
+        plan = enc.armar_cronograma(self._encuesta(votos))
+        juegan = {x["nombre"] for r in plan["reservas"] for x in r["juegan"]}
+        self.assertIn(NOMBRES_TEST[8], juegan,
+                      "el que solo puede a las 16 tendría que entrar en la de las 16")
+
     def test_sin_permiso_no_se_programa(self):
         import encuesta as enc
         self._encuesta({n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]}}
