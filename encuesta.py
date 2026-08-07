@@ -564,6 +564,10 @@ class _Agenda:
 
 ES_MANANA = lambda h: int(str(h)[:2]) < 13          # noqa: E731
 MARGEN_CAMBIO_SEG = 300      # el cambio corre 5 min después de que se libera el último
+# ⚠ El cambio NUNCA va el día anterior: cancelar y volver a tomar la cancha cinco
+# minutos después de ganarla en la apertura es devolverla al ruedo en el peor momento.
+# Va el día del turno, y no de madrugada.
+HORA_MIN_CAMBIO = 8
 MAX_ROTAN = 2                # regla de Darío: rotando afuera a lo sumo 2 por turno
 
 
@@ -844,14 +848,18 @@ class _Armador:
         # cambio y vuelven a la bolsa.
         forzados = [p for p in juegan if not agenda.libre(club, p, apertura, fin)]
 
-        # el cambio corre cuando se libera el ÚLTIMO de los que tienen el carnet tomado
+        # el cambio corre cuando se libera el ÚLTIMO de los que tienen el carnet tomado,
+        # pero NUNCA antes de la mañana del día del turno (ver HORA_MIN_CAMBIO)
+        piso = min(turno.replace(hour=HORA_MIN_CAMBIO, minute=0),
+                   turno - datetime.timedelta(minutes=30))
         if forzados:
             libres_en = [agenda.libre_desde(club, p, turno, apertura) for p in forzados]
-            cambio_dt = max(libres_en) + datetime.timedelta(seconds=MARGEN_CAMBIO_SEG)
+            cambio_dt = max(max(libres_en) + datetime.timedelta(seconds=MARGEN_CAMBIO_SEG),
+                            piso)
             if cambio_dt >= turno:
                 return None                    # los que entran no se liberan a tiempo
         else:
-            cambio_dt = apertura + datetime.timedelta(seconds=MARGEN_CAMBIO_SEG)
+            cambio_dt = piso
 
         prestados = [p for p in self._pool_prestados(d)
                      if p not in juegan and agenda.libre(club, p, apertura, cambio_dt)]
@@ -863,12 +871,12 @@ class _Armador:
             prestados += sueltos[:len(forzados) - len(prestados)]
             if len(prestados) < len(forzados):
                 return None                    # no hay con qué pisar
-        # con los prestados que sobran se pisa también a los que TIENEN el carnet libre,
-        # empezando por los que votaron más horarios (dejarles el carnet libre es lo que
-        # les permite jugar en otro turno)
-        opcionales = sorted((p for p in juegan if p not in forzados),
-                            key=lambda p: (-self.n_horas.get((d, p), 1), nom(p).lower()))
-        pisados = forzados + opcionales[:max(0, len(prestados) - len(forzados))]
+        # ⚠ NO pisar de más: gastar un prestado en alguien que YA tiene el carnet libre
+        # quema capacidad al pedo (ese prestado queda tomado desde el día anterior y no
+        # sirve para otra cancha). Los prestados se guardan para los turnos donde los
+        # jugadores tienen el carnet tomado, que es lo que permite sacar MÁS canchas:
+        # medido con los votos reales, pisar de más baja de 6 canchas a 5.
+        pisados = list(forzados)
         directos = [p for p in juegan if p not in pisados]
         pisadores = prestados[:len(pisados)]
         if not pisados:

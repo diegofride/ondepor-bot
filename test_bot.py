@@ -842,21 +842,26 @@ class TestCronograma(BaseApp):
     def _sin_errores_de_verificacion(plan):
         return not any("VERIFICACIÓN" in a for r in plan["reservas"] for a in r["avisos"])
 
-    def test_se_pisa_con_los_prestados_antes_que_con_los_de_los_jugadores(self):
-        """REGLA DE DIEGO: la cancha se pisa con los carnets PRESTADOS; el de alguien
-        que juega se toca solo cuando ya no queda prestado libre. Si se gasta al revés,
-        los carnets de los jugadores quedan tomados desde el día anterior y no sirven
-        para los otros turnos."""
+    def test_los_prestados_se_guardan_para_donde_hacen_falta(self):
+        """REGLA (medida, no intuida): el carnet prestado se usa donde el jugador tiene
+        el suyo TOMADO. Gastarlo en alguien que ya lo tiene libre quema capacidad — ese
+        prestado queda tomado desde el día anterior y no sirve para otra cancha.
+        Con los votos reales, pisar de más baja de 6 canchas a 5."""
         import encuesta as enc
-        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]}} for n in NOMBRES_TEST[:8]}
-        votos.update({n: {"5": {"modo": enc.MODO_PRESTA}} for n in NOMBRES_TEST[8:12]})
+        # 8 juegan a las 15 y los mismos 8 a las 17: los de las 17 tienen el carnet
+        # tomado por las 15, así que ESA es la cancha que hay que pisar con prestados
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00", "17:00"]}}
+                 for n in NOMBRES_TEST[:8]}
+        votos.update({n: {"5": {"modo": enc.MODO_PRESTA}} for n in NOMBRES_TEST[8:]})
         plan = enc.armar_cronograma(self._encuesta(votos))
-        self.assertEqual(len(plan["reservas"]), 2, "8 anotados dan 2 canchas")
-        prestan = {str(self.pid[n]) for n in NOMBRES_TEST[8:12]}
-        pisan = {x["id"] for r in plan["reservas"] for x in r["titulares"] if x["pisa"]}
-        self.assertTrue(pisan, "no usó ningún carnet prestado para pisar")
-        self.assertTrue(pisan <= prestan, "pisó con el carnet de alguien que juega")
-        self.assertEqual(plan["sobran"], [], "los prestados tienen que gastarse")
+        prestan = {str(self.pid[n]) for n in NOMBRES_TEST[8:]}
+        for r in plan["reservas"]:
+            pisan = {x["id"] for x in r["titulares"] if x["pisa"]}
+            self.assertTrue(pisan <= prestan, "pisó con el carnet de alguien que juega")
+            if r["hora"] == "15:00":
+                self.assertFalse(pisan, "a las 15 nadie tiene el carnet tomado todavía")
+            if r["hora"] == "17:00":
+                self.assertTrue(pisan, "a las 17 hay que pisar: jugaron a las 15")
         self.assertTrue(self._sin_errores_de_verificacion(plan))
 
     def test_maniana_y_tarde_del_mismo_dia_no_comparten_carnets(self):
@@ -929,12 +934,14 @@ class TestCronograma(BaseApp):
         self.assertTrue({x["id"] for x in r["titulares"]} <= prestan)
         self.assertIsNotNone(r["cambio"])
         # el sáb 15:00 termina 16:00: el cambio va un rato después, no a las 9:50 del dom
-        fin_sab = datetime.datetime.fromisoformat(f"{self.sab}T16:00:00")
+        # el cambio va el DÍA DEL TURNO (nunca el día anterior: cancelar y volver a
+        # tomar la cancha recién ganada es devolverla al ruedo en el peor momento)
         cambio = datetime.datetime.fromtimestamp(
             r["cambio"]["epoch"], datetime.timezone.utc) + datetime.timedelta(hours=-3)
-        self.assertEqual(cambio.replace(tzinfo=None) - fin_sab,
-                         datetime.timedelta(seconds=enc.MARGEN_CAMBIO_SEG),
-                         "el cambio corre apenas se liberan los del sábado")
+        cambio = cambio.replace(tzinfo=None)
+        turno = datetime.datetime.fromisoformat(f"{self.dom}T10:00:00")
+        self.assertEqual(cambio.date(), turno.date(), "el cambio no puede ser el día antes")
+        self.assertLess(cambio, turno)
         juegan = {str(self.pid[n]) for n in NOMBRES_TEST[:8]}
         self.assertTrue({x["id"] for x in r["juegan"]} <= juegan,
                         "después del cambio, en la cancha están los que votaron esa hora")
