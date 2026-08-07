@@ -3511,13 +3511,17 @@ def _mensaje_finde(e):
         est = get_estado(r.get("id"))
         if est in ("fallada", "vencida"):
             continue
+        titulares = [r.get("reservador", "")] + [nom.get(str(p), str(p))
+                                                 for p in r.get("jugadores", [])]
         cp = r.get("cambio_prog") or {}
+        salen = []
         if cp.get("estado") in ("pendiente", "en_curso", "hecho"):
             quienes = [cp.get("reservador", "")] + [nom.get(str(p), str(p))
                                                     for p in cp.get("jugadores", [])]
+            # los carnets que solo están PISANDO: los que se van con el cambio
+            salen = [q for q in titulares if q and q not in quienes]
         else:
-            quienes = [r.get("reservador", "")] + [nom.get(str(p), str(p))
-                                                   for p in r.get("jugadores", [])]
+            quienes = titulares
         real = cancha_reservada(r["id"]) or ""
         if real:                                  # la que entró de verdad
             n = real.split("-")[0].lstrip("0")
@@ -3530,7 +3534,7 @@ def _mensaje_finde(e):
             cancha = "cancha a definir"
         orden = int(real.split("-")[0]) if real[:2].isdigit() else 99
         filas.append((r["fecha"], r["hora_desde"], orden, cancha,
-                      [q for q in quienes if q], est))
+                      [q for q in quienes if q], est, salen))
 
     if not filas:
         return "🎾 Todavía no hay ninguna cancha reservada para este finde."
@@ -3538,7 +3542,8 @@ def _mensaje_finde(e):
     filas.sort()
     partes = [f"🎾 *Canchas del finde*"]
     dia_actual = None
-    for fecha, hora, _o, cancha, quienes, est in filas:
+    hubo_pisada = False
+    for fecha, hora, _o, cancha, quienes, est, salen in filas:
         if fecha != dia_actual:
             dia_actual = fecha
             d = datetime.date.fromisoformat(fecha)
@@ -3546,6 +3551,13 @@ def _mensaje_finde(e):
         pend = "" if est == "reservada" else "  (a confirmar)"
         partes.append(f"• {hora[:5]} · {cancha}{pend}")
         partes.append(f"   {', '.join(quienes)}")
+        if salen:
+            hubo_pisada = True
+            partes.append(f"   _(tomada con el carnet de {', '.join(salen)} — "
+                          f"se cambia antes del turno)_")
+    if hubo_pisada:
+        partes.append("\n_Los carnets prestados solo sirven para tomar la cancha: antes de "
+                      "cada turno se cambian por los de quienes juegan, así quedan libres._")
     return "\n".join(partes)
 
 

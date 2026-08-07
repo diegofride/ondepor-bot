@@ -1305,7 +1305,13 @@ class TestCronograma(BaseApp):
         with self.web.app.test_request_context():
             txt = self.web._mensaje_finde(self.web.enc.cargar_encuesta())
         self.assertIn("Dario", txt)
-        self.assertNotIn("Beto", txt, "listó a los originales en vez de los del cambio")
+        # los originales NO van como jugadores, pero SÍ en la aclaración de con qué
+        # carnet se tomó la cancha (pedido de Diego)
+        linea_juegan = next(l for l in txt.splitlines() if "Dario" in l and "carnet" not in l)
+        self.assertNotIn("Beto", linea_juegan, "listó a los originales como jugadores")
+        self.assertIn("tomada con el carnet de", txt)
+        self.assertIn("Beto", txt, "no aclaró con qué carnets se reservó")
+        self.assertIn("se cambia antes del turno", txt)
         self.assertIn("(a confirmar)", txt, "esa reserva todavía no se disparó")
 
     def test_el_mensaje_pide_permiso(self):
