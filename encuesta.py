@@ -421,6 +421,11 @@ def resumen_votos(e):
     nombres = {j["id"]: j["nombre"] for j in todos_los_jugadores()}
     extra = {str(p): nombres.get(str(p), str(p)) for p in (e.get("carnets_extra") or [])}
 
+    # carnets que NO se pueden usar aunque estén en la bolsa (pedido de Diego: alguien
+    # que ya tiene su propia reserva por fuera del cronograma, o que directamente no lo
+    # presta). Se sacan de todas las listas para que el armador ni los mire.
+    bloq = {str(x) for x in (e.get("carnets_bloqueados") or [])}
+
     por_dia = {}
     for d in e.get("dias", DIAS_POR_DEFECTO):
         juegan, prestan, por_hora = {}, {}, {}
@@ -434,13 +439,19 @@ def resumen_votos(e):
                     por_hora.setdefault(h, []).append(pid)
             elif info["modo"] == MODO_PRESTA:
                 prestan[pid] = v["nombre"]
-        bolsa = {**juegan, **prestan, **extra}          # los extra sirven todos los días
-        ids = {h: sorted(g, key=lambda p: juegan.get(p, "").lower())
+        for p in bloq:                                  # fuera de juego para el armador
+            juegan.pop(p, None)
+            prestan.pop(p, None)
+        extra_d = {p: n for p, n in extra.items() if p not in bloq}
+        bolsa = {**juegan, **prestan, **extra_d}        # los extra sirven todos los días
+        ids = {h: sorted((p for p in g if p not in bloq),
+                         key=lambda p: juegan.get(p, "").lower())
                for h, g in sorted(por_hora.items())}
+        ids = {h: g for h, g in ids.items() if g}
         por_dia[d] = {
             "por_hora_ids": ids,
             "por_hora": {h: [juegan[p] for p in g] for h, g in ids.items()},
-            "juegan": juegan, "prestan": prestan, "extra": extra, "bolsa": bolsa,
+            "juegan": juegan, "prestan": prestan, "extra": extra_d, "bolsa": bolsa,
             "canchas_posibles": len(bolsa) // 4,
         }
     return {"votaron": votaron, "faltan": faltan, "total": len(jugadores),
