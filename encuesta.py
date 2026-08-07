@@ -784,9 +784,22 @@ class _Armador:
         turno = _dt(fecha, hora)
         apertura = turno - datetime.timedelta(minutes=APERTURA_ANTES_MIN)
         fin = turno + datetime.timedelta(minutes=DUR_TURNO_MIN)
-        orden = sorted(votantes, key=lambda p: (
-            not st["agenda"].libre(club, p, apertura, fin),
-            -self.n_horas.get((d, p), 1) * -1,      # menos horas votadas primero
+        # ⚠ NO alcanza con separar "libre / no libre": entre los que tienen el carnet
+        # tomado hay que mirar CUÁNDO se libera. El que juega a las 10 lo devuelve a las
+        # 11:00 y llega de sobra al turno de las 16 con un cambio; el que juega a las 15
+        # lo devuelve a las 16:00 en punto y NO llega. Tratarlos igual hacía perder
+        # canchas enteras (lo cazó Diego: "una a las 10, una a las 15 y 2 a las 16 te
+        # entran perfecto" — y entraban).
+        margen = datetime.timedelta(seconds=MARGEN_CAMBIO_SEG)
+
+        def libera(p):
+            return st["agenda"].libre_desde(club, p, turno, apertura)
+
+        posibles = [p for p in votantes
+                    if st["agenda"].libre(club, p, apertura, fin) or libera(p) + margen < turno]
+        orden = sorted(posibles, key=lambda p: (
+            libera(p),                              # el que antes tiene el carnet libre
+            self.n_horas.get((d, p), 1),            # menos horas votadas primero
             self._nombre(d, p).lower()))
         nombrados = orden[:canchas * POR_CANCHA]
         if len(nombrados) < canchas * POR_CANCHA:
@@ -878,6 +891,13 @@ class _Armador:
         # medido con los votos reales, pisar de más baja de 6 canchas a 5.
         pisados = list(forzados)
         directos = [p for p in juegan if p not in pisados]
+        # ⚠ los carnets prestados CON cuenta de OnDepor son escasos y son los únicos que
+        # pueden disparar una cancha donde ninguno de los que juegan tiene cuenta. Si esta
+        # cancha ya tiene cuenta entre los suyos, se pisa con prestados SIN cuenta y se
+        # los guarda para las otras (si no, la primera cancha se los come y la siguiente
+        # se queda sin con qué dispararse).
+        hay_cuenta = any(p in self.cuentas for p in directos)
+        prestados = sorted(prestados, key=lambda p: (p in self.cuentas) != (not hay_cuenta))
         pisadores = prestados[:len(pisados)]
         if not pisados:
             cambio_dt = None

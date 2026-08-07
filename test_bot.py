@@ -1168,6 +1168,47 @@ class TestCronograma(BaseApp):
                          "el mismo carnet no puede disparar dos canchas del día")
         self.assertTrue(self._sin_errores_de_verificacion(plan))
 
+    def test_mira_cuando_se_libera_cada_carnet_no_solo_si_esta_libre(self):
+        """Bug que cazó Diego: "una a las 10, una a las 15 y 2 a las 16 te entran
+        perfecto" — y entraban. El armador descartaba a los de las 10 junto con los de
+        las 15, cuando el de las 10 devuelve el carnet a las 11:00 y llega de sobra al
+        turno de las 16 con un cambio; el de las 15 lo devuelve a las 16:00 en punto y
+        NO llega. Tratarlos igual hacía perder canchas enteras."""
+        import encuesta as enc
+        # hacen falta 16 carnets (4 canchas), así que este caso va con un grupo más
+        # grande; al terminar se restauran las bases de la clase
+        gente = [f"P{i:02d}" for i in range(20)]
+        pid = {n: 800 + i for i, n in enumerate(gente)}
+        cuentas = gente[:1] + gente[4:5] + gente[8:9] + gente[12:13]
+        self._W("db_jugadores.json", {"jugadores": [
+            {"nombre": n, "player_id": pid[n]} for n in gente]})
+        self._W("db_reservadores.json", {"reservadores": [
+            {"nombre": n, "usuario": f"{n}@x", "clave": "k", "player_id": pid[n]}
+            for n in cuentas]})
+        self.addCleanup(self.setUpClass)
+        m, t, s = gente[:4], gente[4:8], gente[8:12]      # 10 h · 15 h · solo 16 h
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["10:00", "16:00"]}} for n in m}
+        votos.update({n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00", "16:00"]}} for n in t})
+        votos.update({n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["16:00"]}} for n in s})
+        votos.update({n: {"5": {"modo": enc.MODO_PRESTA}} for n in gente[12:]})
+        e = {"id": "enc-test", "token": "tok", "dias": [5], "horas": enc.HORAS_POR_DEFECTO,
+             "fechas": {"5": self.sab}, "estado": "abierta",
+             "participantes": [str(pid[n]) for n in gente], "carnets_extra": []}
+        self._W("encuesta_config.json", e)
+        self._W("votos.json", {"votos": {"enc-test": {
+            str(pid[n]): {"nombre": n, "dias": d, "cuando": ""} for n, d in votos.items()}}})
+        plan = enc.armar_cronograma(e, {(5, "10:00"): 1, (5, "15:00"): 1, (5, "16:00"): 2})
+        horas = sorted(r["hora"] for r in plan["reservas"])
+        self.assertEqual(horas, ["10:00", "15:00", "16:00", "16:00"],
+                         "las 2 de las 16 entran: los de las 10 se liberan a las 11:00")
+        # y los que entran a las 16 son los de las 10 (no los de las 15, que no llegan)
+        de_las_15 = {str(pid[n]) for n in t}
+        c16 = [r for r in plan["reservas"] if r["hora"] == "16:00"]
+        entran = {p for r in c16 if r["cambio"] for p in r["cambio"]["entran"]}
+        self.assertFalse(entran & de_las_15,
+                         "metió a alguien de las 15, que se libera recién a las 16:00")
+        self.assertTrue(self._sin_errores_de_verificacion(plan))
+
     def test_sin_permiso_no_se_programa(self):
         import encuesta as enc
         self._encuesta({n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]}}
