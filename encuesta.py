@@ -616,14 +616,21 @@ class _Armador:
                 return n
         return self.cuentas.get(pid, str(pid))
 
-    def _pool_pisadores(self, d):
-        """Carnets para pisar, en orden: prestados → de afuera → sueltos (de gente que
-        juega pero cuyo carnet no está en ninguna reserva en ese rango)."""
+    def _pool_prestados(self, d):
+        """Los carnets que están SOLO para pisar: los que prestan en la encuesta y los
+        de afuera. Estos son los que hay que gastar primero (regla de Diego)."""
         info = self.r["por_dia"].get(d, {})
         prestan = list(info.get("prestan", {}))
-        extra = [p for p in info.get("extra", {}) if p not in prestan]
-        sueltos = [p for p in info.get("juegan", {}) if p not in prestan and p not in extra]
-        return prestan + extra + sueltos
+        return prestan + [p for p in info.get("extra", {}) if p not in prestan]
+
+    def _pool_sueltos(self, d):
+        """Último recurso: el carnet de alguien que juega pero que en ese rango no está
+        en ninguna reserva. Se usa solo si los prestados no alcanzan."""
+        fuera = set(self._pool_prestados(d))
+        return [p for p in self.r["por_dia"].get(d, {}).get("juegan", {}) if p not in fuera]
+
+    def _pool_pisadores(self, d):
+        return self._pool_prestados(d) + self._pool_sueltos(d)
 
     # ------------------------------------------------------------------
     #  Búsqueda: enumera cuántas canchas darle a cada hora del primer día
@@ -755,8 +762,10 @@ class _Armador:
         # esto el optimizador metía todo en el horario más votado y dejaba las otras
         # horas vacías, que es justo lo que no quieren.
         horarios = sum(1 for c in a.values() if c)
-        return (sum(a.values()), horarios, len(gente), lugares,
-                suma(d1, "t"), suma(d2, "m"), suma(d1, "m"), suma(d2, "t"))
+        # la tarde del sábado manda (es el día de más gente): entre dos planes con la
+        # misma cantidad de canchas, gana el que le da más al sábado a la tarde
+        return (sum(a.values()), suma(d1, "t"), horarios, len(gente), lugares,
+                suma(d2, "m"), suma(d1, "m"), suma(d2, "t"))
 
     # ------------------------------------------------------------------
     def _armar_turno(self, st, d, hora, canchas, con_avisos=True):
@@ -828,23 +837,42 @@ class _Armador:
         etiqueta = f"{DIAS[d]} {int(hora[:2])} h · cancha {num}"
         nom = lambda p: self._nombre(d, p)      # noqa: E731
 
-        directos = [p for p in juegan if agenda.libre(club, p, apertura, fin)]
-        pisados = [p for p in juegan if p not in directos]
+        # ⚠ REGLA DE DIEGO: la cancha se PISA CON LOS CARNETS PRESTADOS. El carnet de
+        # alguien que juega se toca solo cuando ya no queda prestado libre. Si se gastan
+        # al revés, los carnets de los jugadores quedan tomados desde el viernes y no
+        # sirven para los otros turnos; los prestados, en cambio, se liberan con el
+        # cambio y vuelven a la bolsa.
+        forzados = [p for p in juegan if not agenda.libre(club, p, apertura, fin)]
 
-        cambio_dt = None
-        if pisados:
-            libres_en = [agenda.libre_desde(club, p, turno, apertura) for p in pisados]
+        # el cambio corre cuando se libera el ÚLTIMO de los que tienen el carnet tomado
+        if forzados:
+            libres_en = [agenda.libre_desde(club, p, turno, apertura) for p in forzados]
             cambio_dt = max(libres_en) + datetime.timedelta(seconds=MARGEN_CAMBIO_SEG)
             if cambio_dt >= turno:
                 return None                    # los que entran no se liberan a tiempo
+        else:
+            cambio_dt = apertura + datetime.timedelta(seconds=MARGEN_CAMBIO_SEG)
 
-        pisadores = []
-        if pisados:
-            pool = [p for p in self._pool_pisadores(d)
-                    if p not in juegan and agenda.libre(club, p, apertura, cambio_dt)]
-            pisadores = pool[:len(pisados)]
-            if len(pisadores) < len(pisados):
+        prestados = [p for p in self._pool_prestados(d)
+                     if p not in juegan and agenda.libre(club, p, apertura, cambio_dt)]
+        if len(prestados) < len(forzados):
+            # a los que tienen el carnet tomado hay que pisarlos sí o sí; si no hay
+            # prestados, se completa con el carnet suelto de algún otro jugador
+            sueltos = [p for p in self._pool_sueltos(d)
+                       if p not in juegan and agenda.libre(club, p, apertura, cambio_dt)]
+            prestados += sueltos[:len(forzados) - len(prestados)]
+            if len(prestados) < len(forzados):
                 return None                    # no hay con qué pisar
+        # con los prestados que sobran se pisa también a los que TIENEN el carnet libre,
+        # empezando por los que votaron más horarios (dejarles el carnet libre es lo que
+        # les permite jugar en otro turno)
+        opcionales = sorted((p for p in juegan if p not in forzados),
+                            key=lambda p: (-self.n_horas.get((d, p), 1), nom(p).lower()))
+        pisados = forzados + opcionales[:max(0, len(prestados) - len(forzados))]
+        directos = [p for p in juegan if p not in pisados]
+        pisadores = prestados[:len(pisados)]
+        if not pisados:
+            cambio_dt = None
 
         res_prestado = None      # se llena solo si la dispara un carnet prestado
         res_ini = next((p for p in directos if p in self.cuentas), None) \

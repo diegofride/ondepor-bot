@@ -842,18 +842,21 @@ class TestCronograma(BaseApp):
     def _sin_errores_de_verificacion(plan):
         return not any("VERIFICACIÓN" in a for r in plan["reservas"] for a in r["avisos"])
 
-    def test_tarde_directa_sin_pisar_cuando_no_hace_falta(self):
-        """Si nadie juega a la mañana, la tarde va con los carnets de los que juegan
-        y los prestados quedan enteros (sirven para el día siguiente)."""
+    def test_se_pisa_con_los_prestados_antes_que_con_los_de_los_jugadores(self):
+        """REGLA DE DIEGO: la cancha se pisa con los carnets PRESTADOS; el de alguien
+        que juega se toca solo cuando ya no queda prestado libre. Si se gasta al revés,
+        los carnets de los jugadores quedan tomados desde el día anterior y no sirven
+        para los otros turnos."""
         import encuesta as enc
         votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]}} for n in NOMBRES_TEST[:8]}
         votos.update({n: {"5": {"modo": enc.MODO_PRESTA}} for n in NOMBRES_TEST[8:12]})
         plan = enc.armar_cronograma(self._encuesta(votos))
         self.assertEqual(len(plan["reservas"]), 2, "8 anotados dan 2 canchas")
-        for r in plan["reservas"]:
-            self.assertIsNone(r["cambio"], "sin conflicto no hay nada que cambiar")
-            self.assertFalse(any(x["pisa"] for x in r["titulares"]))
-        self.assertEqual(len(plan["sobran"]), 4, "los 4 prestados quedan sin usar")
+        prestan = {str(self.pid[n]) for n in NOMBRES_TEST[8:12]}
+        pisan = {x["id"] for r in plan["reservas"] for x in r["titulares"] if x["pisa"]}
+        self.assertTrue(pisan, "no usó ningún carnet prestado para pisar")
+        self.assertTrue(pisan <= prestan, "pisó con el carnet de alguien que juega")
+        self.assertEqual(plan["sobran"], [], "los prestados tienen que gastarse")
         self.assertTrue(self._sin_errores_de_verificacion(plan))
 
     def test_maniana_y_tarde_del_mismo_dia_no_comparten_carnets(self):
@@ -882,7 +885,7 @@ class TestCronograma(BaseApp):
         votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["09:00", "15:00"]}}
                  for n in NOMBRES_TEST[:8]}
         plan = enc.armar_cronograma(self._encuesta(votos))
-        self.assertEqual(sorted(r["hora"] for r in plan["reservas"]), ["09:00", "15:00"])
+        self.assertEqual(len(plan["reservas"]), 2, "8 carnets dan 2 canchas")
         juegan = {x["id"] for r in plan["reservas"] for x in r["juegan"]}
         self.assertEqual(len(juegan), 8, "los 8 tienen que jugar")
         self.assertTrue(self._sin_errores_de_verificacion(plan))
