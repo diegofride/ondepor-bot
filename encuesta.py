@@ -571,6 +571,54 @@ HORA_MIN_CAMBIO = 8
 MAX_ROTAN = 2                # regla de Darío: rotando afuera a lo sumo 2 por turno
 
 
+def reservas_existentes():
+    """Las reservas que YA están cargadas en el sistema, con las ventanas en que dejan
+    tomado cada carnet.
+
+    ⚠ SIN esto el armador planifica como si el finde estuviera vacío y propone canchas
+    pisando carnets que ya están comprometidos (lo cazó Diego: "Furmanski no tiene libre
+    el carnet hasta las 17 del sábado" — tenía una reserva cargada a las 16).
+    Devuelve [(club, player_id, desde, hasta)].
+    """
+    estados = rb.leer_json("estados.json", {}) or {}
+    jugadores = rb._cargar("db_jugadores.json", "jugadores")
+    tramos = []
+    for r in rb._cargar("reservas.json", "reservas"):
+        est = (estados.get(r.get("id")) or {}).get("estado", "programada")
+        if est in ("fallada", "vencida"):
+            continue                       # esa cancha no entró: no toma ningún carnet
+        try:
+            turno = _dt(r["fecha"], r["hora_desde"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        club = r.get("club_id") or club_de(r["hora_desde"])
+        ap = turno - datetime.timedelta(minutes=APERTURA_ANTES_MIN)
+        fin = turno + datetime.timedelta(minutes=DUR_TURNO_MIN)
+        res_pid = vincular_carnet(r.get("reservador"), jugadores)
+        ini = {str(p) for p in r.get("jugadores", [])} | ({str(res_pid)} if res_pid else set())
+
+        cp = r.get("cambio_prog") or {}
+        cambio = None
+        if cp.get("estado") in ("pendiente", "en_curso") and cp.get("ej_epoch"):
+            cambio = ap + datetime.timedelta(seconds=cp["ej_epoch"] - _epoch_ar(ap))
+            if not (ap < cambio < fin):
+                cambio = None
+        if cambio:
+            fin_pid = vincular_carnet(cp.get("reservador"), jugadores)
+            fin_l = {str(p) for p in cp.get("jugadores", [])} | ({str(fin_pid)} if fin_pid else set())
+        else:
+            fin_l = ini
+
+        for p in ini | fin_l:
+            if cambio is None or (p in ini and p in fin_l):
+                tramos.append((club, p, ap, fin))
+            elif p in ini:
+                tramos.append((club, p, ap, cambio))
+            else:
+                tramos.append((club, p, cambio, fin))
+    return tramos
+
+
 def armar_cronograma(e, fijas=None):
     """Arma el flujo de reservas del finde entero (modelo de Darío/Diego, ver
     ARMADOR_CRONOGRAMA.md). Reparte los CARNETS; jugar y tener el carnet en la reserva
@@ -597,6 +645,7 @@ class _Armador:
     def __init__(self, e, r, cuentas, fijas=None):
         self.e, self.r, self.cuentas = e, r, cuentas
         self.fijas = {(int(d), str(h)): int(c) for (d, h), c in (fijas or {}).items()}
+        self.ya_tomados = reservas_existentes()
         self.dias = list(e.get("dias", DIAS_POR_DEFECTO))
         self.fechas = e.get("fechas", {})
         # por día: [(hora, votantes, canchas_max)] en orden cronológico
@@ -675,7 +724,11 @@ class _Armador:
         return mejor
 
     def _simular(self, cfg_d1):
-        st = {"agenda": _Agenda(), "reservas": [], "avisos": [], "usados": set(),
+        ag = _Agenda()
+        # arranca con los carnets que YA están comprometidos por las reservas cargadas
+        for club, p, a, b in self.ya_tomados:
+            ag.ocupar(club, p, a, b)
+        st = {"agenda": ag, "reservas": [], "avisos": [], "usados": set(),
               "armadas": {}}
         d1 = self.dias[0]
         for h, pids, cmax in self.turnos[d1]:

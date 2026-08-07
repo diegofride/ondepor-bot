@@ -828,6 +828,8 @@ class TestCronograma(BaseApp):
 
     def _encuesta(self, votos, extra=()):
         import encuesta as enc
+        # el armador respeta las reservas YA cargadas: cada escenario arranca limpio
+        self._W("reservas.json", {"reservas": []})
         e = {"id": "enc-test", "token": "tok", "dias": [5, 6], "horas": enc.HORAS_POR_DEFECTO,
              "fechas": {"5": self.sab, "6": self.dom}, "estado": "abierta",
              "participantes": [str(self.pid[n]) for n in NOMBRES_TEST],
@@ -1207,6 +1209,35 @@ class TestCronograma(BaseApp):
         entran = {p for r in c16 if r["cambio"] for p in r["cambio"]["entran"]}
         self.assertFalse(entran & de_las_15,
                          "metió a alguien de las 15, que se libera recién a las 16:00")
+        self.assertTrue(self._sin_errores_de_verificacion(plan))
+
+    def test_respeta_los_carnets_de_las_reservas_ya_cargadas(self):
+        """Bug que cazó Diego: "Furmanski no tiene libre el carnet hasta las 17 del
+        sábado" — tenía una reserva YA cargada a las 16 y el armador planificaba como si
+        el finde estuviera vacío, proponiendo canchas sobre carnets comprometidos."""
+        import encuesta as enc
+        ocupados = NOMBRES_TEST[:4]
+        self._W("reservas.json", {"reservas": [{
+            "id": "ya-1", "club_id": 1102, "cancha": "", "fecha": self.sab,
+            "hora_desde": "16:00", "hora_hasta": "17:00", "single_double": 2,
+            "reservador": ocupados[0],
+            "jugadores": [self.pid[n] for n in ocupados[1:]],
+            "creado_por": "Diego"}]})
+        # ...y ahora se pide una cancha a las 15 con ESA misma gente
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]}} for n in ocupados}
+        e = {"id": "enc-test", "token": "tok", "dias": [5], "horas": enc.HORAS_POR_DEFECTO,
+             "fechas": {"5": self.sab}, "estado": "abierta",
+             "participantes": [str(self.pid[n]) for n in NOMBRES_TEST], "carnets_extra": []}
+        self._W("encuesta_config.json", e)
+        self._W("votos.json", {"votos": {"enc-test": {
+            str(self.pid[n]): {"nombre": n, "dias": d, "cuando": ""}
+            for n, d in votos.items()}}})
+        plan = enc.armar_cronograma(e)
+        # sus carnets están tomados desde el viernes 16:01: no se pueden usar a las 15
+        usados = {x["id"] for r in plan["reservas"]
+                  for x in r["titulares"] + [r["reservador"]]}
+        self.assertFalse(usados & {str(self.pid[n]) for n in ocupados},
+                         "usó un carnet que ya estaba en una reserva cargada")
         self.assertTrue(self._sin_errores_de_verificacion(plan))
 
     def test_sin_permiso_no_se_programa(self):
