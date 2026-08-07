@@ -749,7 +749,13 @@ class _Armador:
             ids = {x["id"] for x in rsv["juegan"]}
             gente |= ids
             lugares += len(ids)
-        return (sum(a.values()), len(gente), lugares,
+        # ⚠ REPARTIR entre horarios, no amontonar: 3 canchas todas a las 16 hacen que
+        # cada uno juegue UNA vez, mientras que 15 + 17 encadenan (el turno de las 15
+        # libera los carnets a las 16:00 y a las 16:10 esa gente entra a las 17). Sin
+        # esto el optimizador metía todo en el horario más votado y dejaba las otras
+        # horas vacías, que es justo lo que no quieren.
+        horarios = sum(1 for c in a.values() if c)
+        return (sum(a.values()), horarios, len(gente), lugares,
                 suma(d1, "t"), suma(d2, "m"), suma(d1, "m"), suma(d2, "t"))
 
     # ------------------------------------------------------------------
@@ -770,9 +776,20 @@ class _Armador:
             -self.n_horas.get((d, p), 1) * -1,      # menos horas votadas primero
             self._nombre(d, p).lower()))
         nombrados = orden[:canchas * POR_CANCHA]
-        rotan = [p for p in votantes if p not in nombrados]
         if len(nombrados) < canchas * POR_CANCHA:
             return False                            # no hay gente para tantas canchas
+        # cada cancha necesita a alguien con cuenta de OnDepor ENTRE LOS QUE JUEGAN, o la
+        # tiene que disparar un carnet prestado que después ocupa un lugar (cancha para 3).
+        # Si el corte no dejó suficientes, se cambian los últimos por los que sí tienen.
+        con = [p for p in nombrados if p in self.cuentas]
+        if len(con) < canchas:
+            afuera = [p for p in orden[canchas * POR_CANCHA:] if p in self.cuentas]
+            sin = [p for p in reversed(nombrados) if p not in self.cuentas]
+            while len(con) < canchas and afuera and sin:
+                entra, sale = afuera.pop(0), sin.pop(0)
+                nombrados[nombrados.index(sale)] = entra
+                con.append(entra)
+        rotan = [p for p in votantes if p not in nombrados]
 
         # repartir en canchas cuidando que cada una tenga al menos una cuenta
         grupos = [[] for _ in range(canchas)]
@@ -929,9 +946,20 @@ class _Armador:
                                + (f" (candidatos: {', '.join(nombres)})" if nombres else "")
                                + "; si no, conviene que uno cambie de horario.")
                 elif cmax and c < cmax:
-                    sug.append(f"{DIAS[d]} {int(h[:2])} h: la gente daba para "
-                               f"{cmax} cancha(s) y salieron {c}: no alcanzaron los "
-                               f"carnets libres a esa hora.")
+                    # OJO: no siempre es por falta de carnets. Si ese día se armaron
+                    # canchas en OTRO horario, fue una elección del armador y hay que
+                    # decirlo así (antes mentía y mandaba a buscar carnets al pedo).
+                    otras = sum(v for (dd, hh), v in armadas.items()
+                                if dd == d and hh != h and v)
+                    if not c and otras:
+                        sug.append(f"{DIAS[d]} {int(h[:2])} h: se anotaron {v} (darían "
+                                   f"{cmax} cancha(s)) pero las canchas de ese día se "
+                                   f"armaron en otros horarios. Si las querés acá, "
+                                   f"fijalo arriba.")
+                    else:
+                        sug.append(f"{DIAS[d]} {int(h[:2])} h: se anotaron {v} (darían "
+                                   f"{cmax} cancha(s)) y salieron {c}: a esa hora no "
+                                   f"quedaban carnets libres para más.")
         return sug
 
 

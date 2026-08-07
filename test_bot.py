@@ -874,20 +874,36 @@ class TestCronograma(BaseApp):
             vistos |= ids
         self.assertTrue(self._sin_errores_de_verificacion(plan))
 
-    def test_ocho_carnets_no_alcanzan_para_maniana_y_tarde(self):
-        """Si los mismos 8 votan mañana y tarde, los carnets dan para UNA franja (todo
-        el sábado se reserva el viernes y la mañana no se puede pisar: sus jugadores
-        no se liberan antes del turno). La prioridad desempata a favor de la tarde y
-        la mañana queda explicada en las sugerencias."""
+    def test_con_ocho_carnets_reparte_en_vez_de_amontonar(self):
+        """8 carnets dan para 2 canchas en todo el sábado (se reservan todas el viernes).
+        Entre ponerlas las dos a la misma hora o una a la mañana y otra a la tarde, gana
+        REPARTIR: amontonar hace que cada uno juegue una sola vez y deja horas vacías."""
         import encuesta as enc
         votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["09:00", "15:00"]}}
                  for n in NOMBRES_TEST[:8]}
         plan = enc.armar_cronograma(self._encuesta(votos))
-        self.assertEqual([r["hora"] for r in plan["reservas"]], ["15:00", "15:00"],
-                         "solo la tarde: los 8 carnets quedaron ahí")
-        self.assertTrue(any("9 h" in s for s in plan["sugerencias"]),
-                        plan["sugerencias"])
+        self.assertEqual(sorted(r["hora"] for r in plan["reservas"]), ["09:00", "15:00"])
+        juegan = {x["id"] for r in plan["reservas"] for x in r["juegan"]}
+        self.assertEqual(len(juegan), 8, "los 8 tienen que jugar")
         self.assertTrue(self._sin_errores_de_verificacion(plan))
+
+    def test_cada_cancha_tiene_una_cuenta_entre_los_que_juegan(self):
+        """Si al elegir los 4 no cae ninguno con cuenta de OnDepor, la cancha terminaba
+        disparada por un carnet prestado que ocupaba un lugar (quedaba para 3). Se
+        cambian los últimos por los que sí tienen cuenta."""
+        import encuesta as enc
+        # los que tienen cuenta votan MUCHOS horarios (el orden natural los manda al
+        # fondo) y los que no tienen votan uno solo
+        votos = {}
+        for n in CON_CUENTA:
+            votos[n] = {"5": {"modo": enc.MODO_JUEGO,
+                              "horas": ["09:00", "10:00", "15:00", "16:00", "17:00"]}}
+        for n in [x for x in NOMBRES_TEST if x not in CON_CUENTA][:6]:
+            votos[n] = {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]}}
+        plan = enc.armar_cronograma(self._encuesta(votos))
+        for r in plan["reservas"]:
+            self.assertEqual(len(r["juegan"]), 4,
+                             f"{r['hora']} quedó para 3: no cayó ninguna cuenta entre los 4")
 
     def test_flujo_del_finde_domingo_pisado_con_comodines(self):
         """El corazón del modelo: el domingo a la mañana se reserva el sábado con
