@@ -253,6 +253,40 @@ class TestPrecarga(BaseApp):
     def test_precarga_40s_antes(self):
         self.assertEqual(self.rb.PRECARGA_ANTES_SEG, 40)
 
+    # -- el motivo REAL por el que no abre el formulario (08/08/2026: el carnet de
+    #    Lionel estaba ocupado y el log decía "¿svid/sesión?", que no es lo que pasó) --
+    def _api_sin_jid(self, respuesta):
+        api = self.core.OnDepor.__new__(self.core.OnDepor)
+        api.club_id, api.svid, api.csrf = 1102, "x", "y"
+        api._ultimo_form = respuesta
+        api.abrir_formulario = lambda f, h: None
+        return api
+
+    def test_dice_por_que_no_abrio_el_formulario(self):
+        api = self._api_sin_jid({"status": "failure",
+                                 "message": "  <br>Tenés el máximo de reservas activas "
+                                            "permitidas por el club.<br>"})
+        r = api.reservar("2026-08-09", "10:00", "11:00", [{"id": 1, "nombre": "a"}], pausa=0)
+        self.assertEqual(r["status"], "failure")
+        self.assertEqual(r["errors"], "Tenés el máximo de reservas activas permitidas por el club.")
+
+    def test_saca_el_mensaje_del_popup_html(self):
+        api = self._api_sin_jid({"error": "<div class='popup'><h4>Reserva</h4>"
+                                          "<div>  <br>Carnet ocupado.<br></div></div>"})
+        r = api.reservar("2026-08-09", "10:00", "11:00", [{"id": 1, "nombre": "a"}], pausa=0)
+        self.assertIn("Carnet ocupado.", r["errors"])
+
+    def test_sin_mensaje_queda_el_texto_viejo(self):
+        api = self._api_sin_jid({})
+        r = api.reservar("2026-08-09", "10:00", "11:00", [{"id": 1, "nombre": "a"}], pausa=0)
+        self.assertIn("svid", r["errors"])
+
+    def test_el_turno_que_no_abrio_sigue_siendo_no_abierto(self):
+        """Ese caso NO es un rechazo: hay que reintentar hasta que abra."""
+        api = self._api_sin_jid({"message": "No se permite reservar con tanta anticipación"})
+        r = api.reservar("2026-08-09", "10:00", "11:00", [{"id": 1, "nombre": "a"}], pausa=0)
+        self.assertEqual(r["status"], "no_abierto")
+
     # -- el plan B no puede depender de lo que le sobre al turno fuente --
     def _api_fuente(self, canchas_del_fuente):
         api = self.core.OnDepor.__new__(self.core.OnDepor)

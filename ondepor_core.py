@@ -121,6 +121,17 @@ def _ids_jugadores(jugadores):
     return [(j.get("id") if isinstance(j, dict) else j) for j in jugadores]
 
 
+def _texto_ondepor(info):
+    """Saca el mensaje legible de una respuesta de OnDepor. Viene en 'message' con
+    <br> y a veces solo dentro de 'error', que es el HTML del popup entero."""
+    for campo in ("message", "error"):
+        crudo = re.sub(r"<[^>]+>", " ", str((info or {}).get(campo, "") or ""))
+        crudo = re.sub(r"\s+", " ", crudo).strip()
+        if crudo:
+            return crudo
+    return ""
+
+
 def _es_ocupada(r):
     """¿El rechazo es "esa cancha no está libre"? ÚNICA definición del criterio (antes
     estaba duplicada en reservar() y en confirmar_objetivo()). Los demás errores —cupo,
@@ -354,7 +365,12 @@ class OnDepor:
             if "anticipa" in msg or "no permite reservar" in msg:
                 # el turno TODAVÍA no abrió (ej: disparamos justo antes de las :01)
                 return {"status": "no_abierto", "errors": info.get("message", "el turno todavía no abrió")}
-            return {"status": "failure", "errors": "no pude abrir el formulario del turno (¿svid/sesión?)"}
+            # OnDepor SÍ dice por qué no abre el formulario ("Tenés el máximo de reservas
+            # activas permitidas por el club", carnet ocupado, etc). Antes se tiraba esa
+            # respuesta y se escribía un "¿svid/sesión?" fijo: el 08/08/2026 eso mandó a
+            # buscar un problema de sesión cuando era un carnet ocupado. Va el texto real.
+            return {"status": "failure",
+                    "errors": _texto_ondepor(info) or "no pude abrir el formulario del turno (¿svid/sesión?)"}
         if p:
             time.sleep(p)   # respiro para el servidor (evita el "refresca tu pantalla")
         canchas = self.canchas_disponibles(fecha, hora_desde, hora_hasta, jid, single_double)
