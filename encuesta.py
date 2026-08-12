@@ -442,8 +442,12 @@ def resumen_votos(e):
         for p in bloq:                                  # fuera de juego para el armador
             juegan.pop(p, None)
             prestan.pop(p, None)
-        extra_d = {p: n for p, n in extra.items() if p not in bloq}
-        bolsa = {**juegan, **prestan, **extra_d}        # los extra sirven todos los días
+        # ⚠ el que JUEGA ese día NO entra como carnet prestado: su carnet lo necesita
+        # para su propia cancha, y gastarlo para pisar otra lo deja afuera. Los días que
+        # no juega sí se usa. (Antes no hacía falta el filtro porque los sumados eran
+        # solo gente de afuera de la encuesta; desde el 08/08/2026 se suma a cualquiera.)
+        extra_d = {p: n for p, n in extra.items() if p not in bloq and p not in juegan}
+        bolsa = {**juegan, **prestan, **extra_d}        # los sumados valen todos los días
         ids = {h: sorted((p for p in g if p not in bloq),
                          key=lambda p: juegan.get(p, "").lower())
                for h, g in sorted(por_hora.items())}
@@ -685,7 +689,7 @@ class _Armador:
 
     def _pool_prestados(self, d):
         """Los carnets que están SOLO para pisar: los que prestan en la encuesta y los
-        de afuera. Estos son los que hay que gastar primero (regla de Diego)."""
+        que se sumaron a mano. Estos son los que hay que gastar primero (regla de Diego)."""
         info = self.r["por_dia"].get(d, {})
         prestan = list(info.get("prestan", {}))
         return prestan + [p for p in info.get("extra", {}) if p not in prestan]

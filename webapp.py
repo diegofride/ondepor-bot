@@ -3116,7 +3116,7 @@ def encuesta_panel():
           <b>{enc.DIAS[d]}</b>
           <div style="margin:6px 0 8px"><small class="hint">
             Carnets disponibles: <b>{len(info['bolsa'])}</b>
-            ({len(info['juegan'])} juegan · {len(info['prestan'])} prestan · {len(info['extra'])} de afuera)
+            ({len(info['juegan'])} juegan · {len(info['prestan'])} prestan · {len(info['extra'])} sumados)
             → alcanzan para <b>{info['canchas_posibles']}</b> cancha(s)</small></div>
           <div style="overflow-x:auto"><table class="permisos" style="min-width:340px">
           <thead><tr><th>Hora</th><th>Anotados</th><th>Da para</th><th>Quiénes</th></tr></thead>
@@ -3168,7 +3168,7 @@ def encuesta_panel():
       <h2>{icon('chart')} Disponibilidad por día</h2>
       <p><small class="hint">4 a 7 jugadores = 1 cancha · 8 a 11 = 2 · 12 o más = 3.
         Y siempre limitado por los carnets que haya ese día (4 por cancha).</small></p>
-      <div><a class="btn sec" href="{url_for('encuesta_carnets')}">{icon('plus')} Sumar carnets de afuera</a></div>
+      <div><a class="btn sec" href="{url_for('encuesta_carnets')}">{icon('plus')} Sumar carnets</a></div>
       {tablas}
     </div>
 
@@ -3299,24 +3299,28 @@ def encuesta_participantes():
 @app.route("/encuesta/carnets", methods=["GET", "POST"])
 @permiso_requerido("encuesta")
 def encuesta_carnets():
-    """Carnets prestados por gente que NO está en la encuesta (de afuera del grupo).
-    Se suman a la bolsa con la que se arman las reservas."""
+    """Carnets que se suman a la bolsa para reservar, vengan de donde vengan.
+
+    ⚠ Antes esta pantalla excluía a los participantes de la encuesta ("carnets de
+    afuera"), y eso dejaba afuera justo el caso más común: el que ESTÁ en la encuesta
+    pero no votó. Su carnet no aparece en ninguna lista y no había forma de sumarlo
+    (pedido de Diego, 08/08/2026). Ahora se puede marcar a cualquiera."""
     e = enc.cargar_encuesta()
     if not e:
         return redirect(url_for("encuesta_panel"))
     if request.method == "GET":
         cuerpo = _pantalla_participantes(
-            "Carnets prestados de afuera",
+            "Sumar carnets",
             url_for("encuesta_carnets"),
             e.get("carnets_extra") or [],
             "Guardar carnets",
-            excluir=e.get("participantes") or [],
-            ayuda=("Gente que no está en la encuesta pero que igual nos presta el carnet. "
-                   "Se suman a la bolsa para reservar (no se les pide que voten)."))
+            ayuda=("Cualquiera que nos preste el carnet, esté o no en la encuesta. Se suma "
+                   "a la bolsa para reservar y no se le pide que vote. Al que juega ese día "
+                   "no se le toca el carnet: se usa solo los días que no juega."))
         return pagina("Encuesta", "encuesta", cuerpo)
     e["carnets_extra"] = request.form.getlist("p")
     enc.guardar_encuesta(e)
-    flash(f"{len(e['carnets_extra'])} carnet(s) prestados de afuera.")
+    flash(f"{len(e['carnets_extra'])} carnet(s) sumados a la bolsa.")
     return redirect(url_for("encuesta_panel"))
 
 

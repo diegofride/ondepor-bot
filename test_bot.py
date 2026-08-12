@@ -986,7 +986,9 @@ class TestEncuesta(BaseApp):
         self.assertEqual(len(sab["juegan"]) + len(sab["prestan"]) + len(sab["extra"]),
                          len(sab["bolsa"]))
 
-    def test_carnets_de_afuera_no_ofrece_a_los_de_la_encuesta(self):
+    def test_sumar_carnets_ofrece_a_todos(self):
+        """Antes escondía a los de la encuesta, y así el que participa pero NO votó
+        quedaba fuera de la bolsa sin manera de agregarlo (Diego, 08/08/2026)."""
         import re
         import encuesta as enc
         todos = enc.todos_los_jugadores()
@@ -994,8 +996,7 @@ class TestEncuesta(BaseApp):
         self._abrir(dentro)
         html = self.cliente().get("/encuesta/carnets").get_data(as_text=True)
         ofrecidos = re.findall(r"name='p' value='(\d+)'", html)
-        for pid in dentro:
-            self.assertNotIn(pid, ofrecidos, "no debería ofrecer a quien ya participa")
+        self.assertEqual(sorted(ofrecidos), sorted(j["id"] for j in todos))
 
     def test_canchas_segun_la_regla_del_grupo(self):
         import encuesta as enc
@@ -1051,6 +1052,38 @@ class TestCronograma(BaseApp):
     @staticmethod
     def _sin_errores_de_verificacion(plan):
         return not any("VERIFICACIÓN" in a for r in plan["reservas"] for a in r["avisos"])
+
+    # -- sumar carnets: cualquiera, esté o no en la encuesta (pedido de Diego 08/08) --
+    def test_se_puede_sumar_el_carnet_del_que_no_voto(self):
+        """El caso que quedaba trabado: está en la encuesta pero no contestó, así que su
+        carnet no aparecía en ninguna lista y no había forma de meterlo en la bolsa."""
+        import encuesta as enc
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]}}
+                 for n in NOMBRES_TEST[:4]}                 # los demás NO votaron
+        mudo = NOMBRES_TEST[5]
+        r = enc.resumen_votos(self._encuesta(votos, extra=[mudo]))
+        bolsa = r["por_dia"][5]["bolsa"]
+        self.assertIn(str(self.pid[mudo]), bolsa)
+        self.assertIn(str(self.pid[mudo]), r["por_dia"][6]["bolsa"])   # sirve los dos días
+
+    def test_el_carnet_sumado_no_se_usa_el_dia_que_esa_persona_juega(self):
+        """Su carnet lo necesita para su propia cancha: pisarla con él lo deja afuera."""
+        import encuesta as enc
+        juega = NOMBRES_TEST[0]
+        votos = {juega: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]},
+                         "6": {"modo": enc.MODO_NO}}}
+        r = enc.resumen_votos(self._encuesta(votos, extra=[juega]))
+        self.assertNotIn(str(self.pid[juega]), r["por_dia"][5]["extra"])   # sábado juega
+        self.assertIn(str(self.pid[juega]), r["por_dia"][6]["extra"])      # domingo no
+
+    def test_el_carnet_sumado_sigue_respetando_los_bloqueados(self):
+        import encuesta as enc
+        n = NOMBRES_TEST[7]
+        e = self._encuesta({}, extra=[n])
+        e["carnets_bloqueados"] = [str(self.pid[n])]
+        self._W("encuesta_config.json", e)
+        r = enc.resumen_votos(e)
+        self.assertNotIn(str(self.pid[n]), r["por_dia"][5]["bolsa"])
 
     def test_los_prestados_se_guardan_para_donde_hacen_falta(self):
         """REGLA (medida, no intuida): el carnet prestado se usa donde el jugador tiene
