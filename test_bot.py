@@ -1072,6 +1072,34 @@ class TestCronograma(BaseApp):
         self.assertFalse([a for a in plan["avisos"] if "no alcanzan" in a],
                          "avisó que faltaban carnets y sí entraban")
 
+    def test_cuando_no_entra_dice_el_motivo_de_verdad(self):
+        """Decía "no alcanzan los carnets libres a esa hora" con la bolsa llena de
+        carnets sin usar. El motivo real es otro: la gente de ESE horario tiene el
+        carnet en el turno anterior y se le libera con el turno ya empezado
+        (Diego: "cómo no quedan carnets libres si hay un montón sin usar")."""
+        import encuesta as enc
+        # 8 juegan a las 15 y a las 16: si se arma la de las 15, sus carnets quedan
+        # tomados hasta las 16:00 en punto y no llegan a la de las 16
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00", "16:00"]}}
+                 for n in NOMBRES_TEST[:8]}
+        votos.update({n: {"5": {"modo": enc.MODO_PRESTA}} for n in NOMBRES_TEST[8:]})
+        plan = enc.armar_cronograma(self._encuesta(votos),
+                                    fijas={(5, "15:00"): 2, (5, "16:00"): 2})
+        fallo = [a for a in plan["avisos"] if "16 h" in a and "no" in a]
+        self.assertTrue(fallo, "no avisó que las de las 16 no entran")
+        self.assertNotIn("no alcanzan los carnets libres", fallo[0])
+        self.assertIn("pueden ir en la reserva", fallo[0])
+
+    def test_rotar_tres_ya_no_es_un_aviso(self):
+        """Regla de Diego: rotando afuera se banca hasta 3 si no hay cómo abrir otra."""
+        import encuesta as enc
+        self.assertEqual(enc.MAX_ROTAN, 3)
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00"]}}
+                 for n in NOMBRES_TEST[:7]}          # 4 juegan, 3 rotan
+        votos.update({n: {"5": {"modo": enc.MODO_PRESTA}} for n in NOMBRES_TEST[7:]})
+        plan = enc.armar_cronograma(self._encuesta(votos))
+        self.assertFalse([a for a in plan["avisos"] if "rotan" in a])
+
     def test_fijar_en_cero_deja_ese_horario_vacio(self):
         import encuesta as enc
         e = self._encuesta(self._finde_parejo())

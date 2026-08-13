@@ -583,7 +583,10 @@ MARGEN_CAMBIO_SEG = 300      # el cambio corre 5 min después de que se libera e
 # minutos después de ganarla en la apertura es devolverla al ruedo en el peor momento.
 # Va el día del turno, y no de madrugada.
 HORA_MIN_CAMBIO = 8
-MAX_ROTAN = 2                # regla de Darío: rotando afuera a lo sumo 2 por turno
+# Rotando afuera: hasta 3 por turno cuando NO hay forma de abrir otra cancha en ese
+# horario (regla de Diego, 12/08/2026; antes el tope era 2 y avisaba por 3 aunque no
+# hubiera nada que hacer al respecto). Con 4 o más sí conviene mover gente de horario.
+MAX_ROTAN = 3
 
 
 def reservas_existentes():
@@ -780,14 +783,14 @@ class _Armador:
                     if cc < c:
                         st["avisos"].append(
                             f"{DIAS[d1]} {int(h[:2])} h: pediste {c} canchas y solo "
-                            f"{'entra 1' if cc == 1 else 'entran ' + str(cc)} "
-                            f"(los demás tienen el carnet tomado a esa hora).")
+                            f"{'entra 1' if cc == 1 else 'entran ' + str(cc)} — "
+                            f"{st.get('_motivo') or 'no hay con quién armar las otras'}.")
                     break
                 self._volver(st, foto)
             else:
                 st["avisos"].append(
                     f"{DIAS[d1]} {int(h[:2])} h: pediste {c} cancha(s) y no entra "
-                    f"ninguna — a esa hora no quedan carnets libres.")
+                    f"ninguna — {st.get('_motivo') or 'no hay con quién armarla'}.")
         for d in self.dias[1:]:
             for h, pids, cmax in self._orden_turnos(d):
                 st["armadas"][(d, h)] = 0
@@ -804,8 +807,8 @@ class _Armador:
                     self._volver(st, foto)
                     if (d, h) in self.fijas:     # solo avisa lo que pediste vos
                         st["avisos"].append(
-                            f"{DIAS[d]} {int(h[:2])} h: pediste {c} cancha(s) y no salen "
-                            f"(no alcanzan los carnets libres a esa hora).")
+                            f"{DIAS[d]} {int(h[:2])} h: pediste {c} cancha(s) y no salen — "
+                            f"{st.get('_motivo') or 'no hay con quién armarlas'}.")
                         break
         st["score"] = self._puntaje(st)
         return st
@@ -894,6 +897,19 @@ class _Armador:
             self._nombre(d, p).lower()))
         nombrados = orden[:canchas * POR_CANCHA]
         if len(nombrados) < canchas * POR_CANCHA:
+            # ⚠ el motivo NO es "no quedan carnets libres": la bolsa puede estar llena de
+            # carnets sin usar. Lo que falta es GENTE DE ESE HORARIO que pueda ir en la
+            # reserva — a los demás el carnet se les libera cuando el turno ya arrancó.
+            # Decirlo mal manda a buscar carnets prestados que no arreglan nada
+            # (Diego, 12/08/2026: "cómo no quedan carnets libres si hay un montón sin usar").
+            trabados = [p for p in votantes if p not in posibles]
+            cuando = min((libera(p) for p in trabados), default=None)
+            st["_motivo"] = (
+                f"votaron {len(votantes)} y solo {len(posibles)} pueden ir en la reserva "
+                f"(hacen falta {canchas * POR_CANCHA}): a los otros {len(trabados)} el "
+                f"carnet se les libera" +
+                (f" recién {cuando.strftime('%H:%M')}, con el turno ya empezado"
+                 if cuando else " demasiado tarde"))
             return False                            # no hay gente para tantas canchas
         # cada cancha necesita a alguien con cuenta de OnDepor ENTRE LOS QUE JUEGAN, o la
         # tiene que disparar un carnet prestado que después ocupa un lugar (cancha para 3).
@@ -1091,11 +1107,18 @@ class _Armador:
                     sug.append(f"{DIAS[d]} {int(h[:2])} h: hay {v} y hacen falta 4 para "
                                f"abrir una cancha. Podrían sumarse: "
                                f"{', '.join(nombres) or 'nadie de horas vecinas'}.")
-                elif c and v - c * POR_CANCHA == 3:
-                    sug.append(f"{DIAS[d]} {int(h[:2])} h: rotan 3 (máximo 2). Con UNO "
-                               f"más se abre otra cancha"
-                               + (f" (candidatos: {', '.join(nombres)})" if nombres else "")
-                               + "; si no, conviene que uno cambie de horario.")
+                elif c and v - c * POR_CANCHA > MAX_ROTAN:
+                    # ⚠ ojo con el "con N más se abre otra cancha": si la gente YA alcanza,
+                    # lo que traba son los carnets y sumar uno más no cambia nada.
+                    faltan = max(0, (c + 1) * POR_CANCHA - v)
+                    cola = ((f"Con {faltan} más se abre otra cancha"
+                             + (f" (candidatos: {', '.join(nombres)})" if nombres else "")
+                             + "; si no, conviene que alguno cambie de horario.")
+                            if faltan else
+                            "Gente para otra cancha hay; lo que falta son carnets libres a "
+                            "esa hora. Probá sumar carnets o mover a alguno de horario.")
+                    sug.append(f"{DIAS[d]} {int(h[:2])} h: rotan {v - c * POR_CANCHA} "
+                               f"(el tope es {MAX_ROTAN}). {cola}")
                 elif cmax and c < cmax:
                     # OJO: no siempre es por falta de carnets. Si ese día se armaron
                     # canchas en OTRO horario, fue una elección del armador y hay que
