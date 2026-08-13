@@ -1090,6 +1090,19 @@ class TestCronograma(BaseApp):
         self.assertNotIn("no alcanzan los carnets libres", fallo[0])
         self.assertIn("pueden ir en la reserva", fallo[0])
 
+    def test_si_pediste_2_y_entra_1_arma_1(self):
+        """Antes el día 2 probaba solo el número exacto: pedías 2, entraba 1, y armaba
+        CERO (Diego: "si pedí 2 canchas y sale 1 sola, ¿por qué no la hacés?")."""
+        import encuesta as enc
+        # domingo a las 16 votan 5: da para 1 cancha, nunca para 2
+        votos = {n: {"6": {"modo": enc.MODO_JUEGO, "horas": ["16:00"]}}
+                 for n in NOMBRES_TEST[:5]}
+        votos.update({n: {"6": {"modo": enc.MODO_PRESTA}} for n in NOMBRES_TEST[5:]})
+        plan = enc.armar_cronograma(self._encuesta(votos), fijas={(6, "16:00"): 2})
+        self.assertEqual(plan["armadas"][(6, "16:00")], 1, "pidió 2, entraba 1, armó 0")
+        self.assertTrue([a for a in plan["avisos"] if "entra 1" in a],
+                        "no avisó que de las 2 entró solo 1")
+
     def test_rotar_tres_ya_no_es_un_aviso(self):
         """Regla de Diego: rotando afuera se banca hasta 3 si no hay cómo abrir otra."""
         import encuesta as enc

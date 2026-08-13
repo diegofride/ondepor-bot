@@ -776,6 +776,7 @@ class _Armador:
                 continue
             # horario FIJADO a mano: si no entran las que pediste, se baja de a una y
             # se avisa — mejor eso que devolver un plan vacío sin explicar por qué
+            motivo = None
             for cc in range(c, 0, -1):
                 foto = self._foto(st)
                 if self._armar_turno(st, d1, h, cc):
@@ -784,32 +785,41 @@ class _Armador:
                         st["avisos"].append(
                             f"{DIAS[d1]} {int(h[:2])} h: pediste {c} canchas y solo "
                             f"{'entra 1' if cc == 1 else 'entran ' + str(cc)} — "
-                            f"{st.get('_motivo') or 'no hay con quién armar las otras'}.")
+                            f"{motivo or 'no hay con quién armar las otras'}.")
                     break
+                motivo = motivo or st.get("_motivo")
                 self._volver(st, foto)
             else:
                 st["avisos"].append(
                     f"{DIAS[d1]} {int(h[:2])} h: pediste {c} cancha(s) y no entra "
-                    f"ninguna — {st.get('_motivo') or 'no hay con quién armarla'}.")
+                    f"ninguna — {motivo or 'no hay con quién armarla'}.")
         for d in self.dias[1:]:
             for h, pids, cmax in self._orden_turnos(d):
                 st["armadas"][(d, h)] = 0
-                # si está fijado a mano se intenta ESE número y nada más
-                intentos = ([self.fijas[(d, h)]] if (d, h) in self.fijas
-                            else range(cmax, 0, -1))
-                for c in intentos:
-                    if not c:
-                        break
+                fijo = self.fijas.get((d, h))
+                # ⚠ si lo fijaste a mano se intenta ESE número y, si no entra, se BAJA de
+                # a una — igual que el día 1. Antes se probaba solo el número exacto y si
+                # fallaba armaba CERO: pedías 2 canchas, entraba 1, y no te armaba ninguna
+                # (lo cazó Diego, 12/08/2026: "si pedí 2 y sale 1 sola, ¿por qué no la
+                # hacés?"). Fijar 0 sigue queriendo decir "ninguna".
+                motivo = None
+                for c in range(cmax if fijo is None else fijo, 0, -1):
                     foto = self._foto(st)
                     if self._armar_turno(st, d, h, c):
                         st["armadas"][(d, h)] = c
+                        if fijo is not None and c < fijo:
+                            st["avisos"].append(
+                                f"{DIAS[d]} {int(h[:2])} h: pediste {fijo} canchas y "
+                                f"{'entra 1' if c == 1 else 'entran ' + str(c)} — "
+                                f"{motivo or 'no hay con quién armar las otras'}.")
                         break
+                    motivo = motivo or st.get("_motivo")
                     self._volver(st, foto)
-                    if (d, h) in self.fijas:     # solo avisa lo que pediste vos
+                else:
+                    if fijo:                      # solo avisa lo que pediste vos
                         st["avisos"].append(
-                            f"{DIAS[d]} {int(h[:2])} h: pediste {c} cancha(s) y no salen — "
-                            f"{st.get('_motivo') or 'no hay con quién armarlas'}.")
-                        break
+                            f"{DIAS[d]} {int(h[:2])} h: pediste {fijo} cancha(s) y no "
+                            f"salen — {motivo or 'no hay con quién armarlas'}.")
         st["score"] = self._puntaje(st)
         return st
 
@@ -861,12 +871,15 @@ class _Armador:
         horarios = sum(1 for c in a.values() if c)
         # la tarde del sábado manda (es el día de más gente): entre dos planes con la
         # misma cantidad de canchas, gana el que le da más al sábado a la tarde
-        cumplidas = sum(1 for k, c in self.fijas.items() if a.get(k, 0) == c)
+        # cuánto de lo que fijaste se cumplió. Va por cancha y no por "todo o nada":
+        # si pediste 2 y entra 1, ese plan tiene que ganarle al que no arma ninguna.
+        cumplidas = sum(min(a.get(k, 0), c) for k, c in self.fijas.items())
         return (cumplidas, sum(a.values()), suma(d1, "t"), horarios, len(gente), lugares,
                 suma(d2, "m"), suma(d1, "m"), suma(d2, "t"))
 
     # ------------------------------------------------------------------
     def _armar_turno(self, st, d, hora, canchas, con_avisos=True):
+        st.pop("_motivo", None)          # que no quede el motivo de un turno anterior
         fecha = self.fechas.get(str(d))
         if not fecha:
             return False
