@@ -1053,6 +1053,41 @@ class TestCronograma(BaseApp):
     def _sin_errores_de_verificacion(plan):
         return not any("VERIFICACIÓN" in a for r in plan["reservas"] for a in r["avisos"])
 
+    # -- fijar un horario a mano ("quiero 2 a las 16") tiene que MANDAR --
+    def _finde_parejo(self):
+        """8 juegan sábado a las 15, 16 y 17; el resto presta el carnet."""
+        import encuesta as enc
+        votos = {n: {"5": {"modo": enc.MODO_JUEGO, "horas": ["15:00", "16:00", "17:00"]}}
+                 for n in NOMBRES_TEST[:8]}
+        votos.update({n: {"5": {"modo": enc.MODO_PRESTA}} for n in NOMBRES_TEST[8:]})
+        return votos
+
+    def test_lo_que_fijas_se_cumple_aunque_de_menos_canchas(self):
+        """Antes ganaba el plan con más canchas aunque ignorara lo que pediste, y encima
+        avisaba 'no alcanzan los carnets libres a esa hora' — que era falso."""
+        import encuesta as enc
+        e = self._encuesta(self._finde_parejo())
+        plan = enc.armar_cronograma(e, fijas={(5, "16:00"): 2})
+        self.assertEqual(plan["armadas"][(5, "16:00")], 2)
+        self.assertFalse([a for a in plan["avisos"] if "no alcanzan" in a],
+                         "avisó que faltaban carnets y sí entraban")
+
+    def test_fijar_en_cero_deja_ese_horario_vacio(self):
+        import encuesta as enc
+        e = self._encuesta(self._finde_parejo())
+        plan = enc.armar_cronograma(e, fijas={(5, "15:00"): 0, (5, "16:00"): 1})
+        self.assertEqual(plan["armadas"][(5, "15:00")], 0)
+        self.assertEqual(plan["armadas"][(5, "16:00")], 1)
+
+    def test_los_horarios_fijados_se_arman_primero(self):
+        """Yendo en orden cronológico los turnos de antes se comen los carnets y el que
+        pediste llega sin nada (medido con el domingo 16 hs del finde del 15/08)."""
+        import encuesta as enc
+        e = self._encuesta(self._finde_parejo())
+        r = enc.resumen_votos(e)
+        a = enc._Armador(e, r, enc.reservadores_con_carnet()[0], {(5, "17:00"): 1}, False)
+        self.assertEqual([h for h, _, _ in a._orden_turnos(5)][0], "17:00")
+
     # -- sumar carnets: cualquiera, esté o no en la encuesta (pedido de Diego 08/08) --
     def test_se_puede_sumar_el_carnet_del_que_no_voto(self):
         """El caso que quedaba trabado: está en la encuesta pero no contestó, así que su

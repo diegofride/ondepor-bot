@@ -741,6 +741,18 @@ class _Armador:
         mejor.pop("usados", None)
         return mejor
 
+    def _orden_turnos(self, d):
+        """Los horarios que FIJASTE a mano se arman PRIMERO, el resto en orden.
+
+        ⚠ Yendo en orden cronológico los turnos de la mañana se comen los carnets y el
+        que pediste vos llega sin nada. Medido el 12/08/2026: pedir 2 canchas el domingo
+        a las 16 avisaba "no alcanzan los carnets libres a esa hora" y era falso — con
+        los turnos de las 9 y las 10 en cero, esas 2 canchas entraban. El aviso mandaba a
+        buscar carnets cuando el problema era el orden."""
+        t = self.turnos[d]
+        return ([x for x in t if (d, x[0]) in self.fijas] +
+                [x for x in t if (d, x[0]) not in self.fijas])
+
     def _simular(self, cfg_d1):
         ag = _Agenda()
         # arranca con los carnets que YA están comprometidos por las reservas cargadas
@@ -749,7 +761,7 @@ class _Armador:
         st = {"agenda": ag, "reservas": [], "avisos": [], "usados": set(),
               "armadas": {}}
         d1 = self.dias[0]
-        for h, pids, cmax in self.turnos[d1]:
+        for h, pids, cmax in self._orden_turnos(d1):
             c = cfg_d1.get(h, 0)
             st["armadas"][(d1, h)] = 0
             if not c:
@@ -777,7 +789,7 @@ class _Armador:
                     f"{DIAS[d1]} {int(h[:2])} h: pediste {c} cancha(s) y no entra "
                     f"ninguna — a esa hora no quedan carnets libres.")
         for d in self.dias[1:]:
-            for h, pids, cmax in self.turnos[d]:
+            for h, pids, cmax in self._orden_turnos(d):
                 st["armadas"][(d, h)] = 0
                 # si está fijado a mano se intenta ESE número y nada más
                 intentos = ([self.fijas[(d, h)]] if (d, h) in self.fijas
@@ -812,11 +824,18 @@ class _Armador:
 
     def _puntaje(self, st):
         """Qué plan es mejor, en orden:
+          0. cuántos de los horarios que FIJASTE a mano se cumplieron — mandan sobre
+             todo lo demás;
           1. más canchas;
           2. más GENTE DISTINTA que llega a jugar (dos planes con las mismas canchas
              no son iguales: el que deja a alguien afuera del finde entero es peor);
           3. más lugares de cancha jugados (el que juega dos veces suma);
           4. la prioridad de Diego: sáb tarde → dom mañana → sáb mañana → dom tarde.
+
+        ⚠ El criterio 0 no estaba y por eso fijar un horario no servía de nada: un plan
+        donde tu horario SÍ entraba perdía contra otro que armaba una cancha más en otro
+        lado, y encima avisaba "no alcanzan los carnets libres a esa hora" (medido el
+        12/08/2026 pidiendo 2 canchas el domingo a las 16). Si lo fijaste, lo quisiste.
         """
         a = st["armadas"]
         d1 = self.dias[0]
@@ -839,7 +858,8 @@ class _Armador:
         horarios = sum(1 for c in a.values() if c)
         # la tarde del sábado manda (es el día de más gente): entre dos planes con la
         # misma cantidad de canchas, gana el que le da más al sábado a la tarde
-        return (sum(a.values()), suma(d1, "t"), horarios, len(gente), lugares,
+        cumplidas = sum(1 for k, c in self.fijas.items() if a.get(k, 0) == c)
+        return (cumplidas, sum(a.values()), suma(d1, "t"), horarios, len(gente), lugares,
                 suma(d2, "m"), suma(d1, "m"), suma(d2, "t"))
 
     # ------------------------------------------------------------------
