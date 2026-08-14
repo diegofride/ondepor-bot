@@ -1098,7 +1098,12 @@ window.addEventListener('resize', marcarNav);
 document.addEventListener('DOMContentLoaded', marcarNav);
 
 // --- feedback en acciones lentas: spinner + evita el doble click ---
+// OJO con la fase: esto iba en CAPTURA y corría ANTES del confirm() de los formularios
+// con confirmación. Si decías que no, el form no se enviaba pero el botón quedaba girando
+// para siempre (lo cazó Diego el 14/08/2026 en "Programar cancelación"). Va en burbuja y
+// se saltea si alguien ya canceló el envío.
 document.addEventListener('submit', function(ev){
+  if(ev.defaultPrevented) return;
   var f = ev.target;
   if(!f || f.dataset.nospin) return;
   var b = f.querySelector('button[type=submit], button:not([type])');
@@ -1106,7 +1111,7 @@ document.addEventListener('submit', function(ev){
     var txt = b.dataset.wait || 'Procesando…';
     setTimeout(function(){ b.disabled=true; b.classList.add('cargando'); b.innerHTML='<span class="spin"></span> '+txt; }, 0);
   }
-}, true);
+});
 
 // --- notificaciones push: se suscribe al usuario logueado (una vez que aceptó) ---
 function b64ToU8(s){
@@ -2034,17 +2039,21 @@ def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False, kp=None):
                         if puede_ondepor and not cp else "")
             cancel_btn = ""
             if puede_ondepor and not kp:
+                # el número va DESPUÉS del botón y con las palabras al lado: antes era un
+                # campo suelto y no se entendía qué significaba (Diego, 14/08/2026)
                 cancel_btn = (
-                    f'<form method="post" style="display:inline"'
+                    f'<form method="post" style="display:inline-flex;align-items:center;'
+                    f'gap:6px;flex-wrap:wrap"'
                     f' action="{url_for("reserva_programar_cancelacion")}"'
-                    f' onsubmit="return confirm(\'El turno se va a cancelar SOLO a esa hora. '
-                    f'¿Programar?\')">'
+                    f' onsubmit="return confirm(\'Queda agendado: el turno se da de baja '
+                    f'solo, esos minutos antes de la hora de juego. ¿Lo dejo programado?\')">'
                     f'<input type="hidden" name="cancelar_prog_id" value="{esc(j["id"])}">'
-                    f'<label style="display:inline-flex;align-items:center;gap:6px">'
+                    f'<button class="sec" title="Dar de baja el turno solo, antes de jugarse">'
+                    f'{icon("clock")} Programar cancelación</button>'
+                    f'<span style="white-space:nowrap;font-size:.85rem">'
                     f'<input name="min_antes" type="number" min="1" max="1380" value="60"'
-                    f' style="width:5.5em" title="minutos antes del turno">'
-                    f'<button class="sec" title="Dejar agendada la cancelación del turno">'
-                    f'{icon("clock")} Programar cancelación</button></label></form>')
+                    f' style="width:4.6em" aria-label="minutos antes del turno">'
+                    f' min antes del turno</span></form>')
             borrar = (f'<form method="post" action="{url_for("reserva_borrar", rid=j["id"])}"'
                       f' onsubmit="return confirm(\'Esto CANCELA el turno en OnDepor y lo saca de la lista. ¿Seguro?\')">'
                       f'<input type="hidden" name="cancelar_ml" value="1">'
@@ -2409,7 +2418,9 @@ def reservas():
     document.addEventListener('DOMContentLoaded', function(){
       marcarJugadores(); contar(); chequearSlot(); tick(); setInterval(tick, 1000);
     });
-    document.addEventListener('submit', function(){ var o=document.getElementById('ov'); if(o) o.classList.add('on'); });
+    document.addEventListener('submit', function(ev){
+      if(ev.defaultPrevented) return;      // dijiste que no en el confirm: sin overlay
+      var o=document.getElementById('ov'); if(o) o.classList.add('on'); });
     </script>""".replace("__OCUP__", json.dumps(ocupados)).replace("__RESPID__", json.dumps(res_pid)).replace("__SLOTS__", json.dumps(sorted(slots))).replace("__SEDES__", json.dumps({k: {"club_id": v["club_id"], "horas": v["horas"], "canchas": v["canchas"], "zonas": v["zonas"]} for k, v in SEDES.items()}))
 
     hidden_cambiar = f'<input type="hidden" name="cambiar_id" value="{cambiar_id}">' if modo_cambiar else ""
