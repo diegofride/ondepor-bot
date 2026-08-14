@@ -1675,6 +1675,14 @@ class TestVincularReservadores(BaseApp):
 #  (los casos los sacó una revisión adversarial antes de habilitarlo)
 # ----------------------------------------------------------------------
 class TestCambioEnProgramadas(BaseApp):
+    def _parche(self, nombre, valor):
+        """Parchea webapp y lo DEJA COMO ESTABA al terminar. Sin esto el parche se filtra
+        a las otras clases (el módulo es uno solo) y rompe tests que no tienen nada que
+        ver — pasó con notificar()."""
+        original = getattr(self.web, nombre)
+        setattr(self.web, nombre, valor)
+        self.addCleanup(setattr, self.web, nombre, original)
+
     def setUp(self):
         self.manana = (datetime.date.today() + datetime.timedelta(days=3)).isoformat()
         self._reserva()
@@ -1696,17 +1704,39 @@ class TestCambioEnProgramadas(BaseApp):
     def _cp(self):
         return (self.web.cargar("reservas.json", "reservas")[0] or {}).get("cambio_prog")
 
+    def test_avisa_al_que_cargo_la_reserva_aunque_la_cancele_otro(self):
+        """Regla de Diego: confirmada, cancelada, carnets cambiados o fallada, el push va
+        SIEMPRE al usuario que la programó — no al reservador de OnDepor."""
+        avisos = []
+        self._parche("notificar", lambda u, t, c, url="/reservas": avisos.append((u, t)))
+        self._parche("_cancelar_en_ondepor", lambda o: "✅ Turno cancelado también en OnDepor.")
+        self.web.set_estado("prog-1", "reservada")
+        self.cliente().post("/reservas/borrar/prog-1", data={"cancelar_ml": "1"},
+                            follow_redirects=True)
+        self.assertEqual([u for u, _ in avisos], ["Diego"])
+        self.assertIn("cancelado", avisos[0][1].lower())
+
+    def test_avisa_al_que_cargo_la_reserva_en_el_cambio_a_mano(self):
+        avisos = []
+        self._parche("notificar", lambda u, t, c, url="/reservas": avisos.append((u, t)))
+        self._parche("_hacer_cambio_jugadores", lambda *a, **k: ("success", "listo"))
+        self.web.set_estado("prog-1", "reservada")
+        self.cliente().post("/reservas/cambiar-jugadores", data={
+            "cambiar_id": "prog-1", "reservador": "Diego Fride",
+            "jug": ["253510", "130962", "304064"]}, follow_redirects=True)
+        self.assertEqual([u for u, _ in avisos], ["Diego"])
+
     def test_avisa_por_push_cuando_corre_el_cambio(self):
         """Corre solo y sin nadie mirando: si no entró hay que enterarse ANTES del turno.
         El push va SOLO al que creó la reserva (Diego preguntó a quién le avisa)."""
         avisos = []
-        self.web.notificar = lambda u, t, c, url="/reservas": avisos.append((u, t, c))
+        self._parche("notificar", lambda u, t, c, url="/reservas": avisos.append((u, t, c)))
         for st, esperado in (("success", "cambiados"), ("perdida", "NO salió")):
             avisos.clear()
             self._reserva({"reservador": "Diego Fride", "jugadores": [253510, 130962, 304064],
                            "estado": "en_curso", "detalle": "", "hora_ej": "14:50",
                            "ej_epoch": 0, "creado_por": "Diego"})
-            self.web._hacer_cambio_jugadores = lambda *a, **k: (st, "mensaje de prueba")
+            self._parche("_hacer_cambio_jugadores", lambda *a, **k: (st, "mensaje de prueba"))
             self.web._ejecutar_cambio_prog("prog-1")
             self.assertEqual(len(avisos), 1, f"no avisó nada con {st}")
             self.assertEqual(avisos[0][0], "Diego", "el push tiene que ir al creador")
@@ -1742,7 +1772,7 @@ class TestCambioEnProgramadas(BaseApp):
             lista[0]["cancel_prog"]["ej_epoch"] = 0      # ya pasó la hora
             self.web.guardar("reservas.json", "reservas", lista)
         llamadas = []
-        self.web._cancelar_en_ondepor = lambda o: llamadas.append(o) or "✅ ok"
+        self._parche("_cancelar_en_ondepor", lambda o: llamadas.append(o) or "✅ ok")
         self.web._revisar_cancel_prog()
         self.assertEqual(llamadas, [], "canceló sin turno confirmado")
         self.assertEqual(self._kp()["estado"], "pendiente")
@@ -1758,7 +1788,7 @@ class TestCambioEnProgramadas(BaseApp):
             self.web.guardar("reservas.json", "reservas", lista)
         self.web.set_estado("prog-1", "reservada")
         llamadas = []
-        self.web._cancelar_en_ondepor = lambda o: llamadas.append(o) or "✅ ok"
+        self._parche("_cancelar_en_ondepor", lambda o: llamadas.append(o) or "✅ ok")
         self.web._revisar_cancel_prog()
         self.assertEqual(llamadas, [])
         self.assertEqual(self._kp()["estado"], "vencido")
@@ -1781,7 +1811,7 @@ class TestCambioEnProgramadas(BaseApp):
             def cancelar_reserva(self, rid):
                 cancelados.append(rid)
                 return {"status": "success"}
-        self.web.OnDepor = lambda *a, **k: ApiFalsa()
+        self._parche("OnDepor", lambda *a, **k: ApiFalsa())
         msg = self.web._cancelar_en_ondepor(obj)
         self.assertEqual(cancelados, [222], "canceló el turno de otra hora")
         self.assertIn("✅", msg)

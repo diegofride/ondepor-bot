@@ -2764,6 +2764,11 @@ def reserva_cambiar_jugadores():
         flash("Error al cambiar: " + msg)
     else:
         flash("No se cambió: " + msg)
+    # el que cargó la reserva tiene que enterarse aunque el cambio lo haga OTRO usuario
+    notificar(rsv.get("creado_por", ""),
+              "🔁 Carnets cambiados" if st == "success" else "⚠️ El cambio de carnets NO salió",
+              f"{fmt_fecha(rsv.get('fecha', ''))} {rsv.get('hora_desde', '')} · "
+              f"{str(msg)[:120]}")
     return redirect(url_for("reservas"))
 
 
@@ -2974,7 +2979,13 @@ def reserva_borrar(rid):
         return redirect(url_for("reservas"))
     # cancelación en OnDepor: es una llamada de RED (lenta) -> FUERA del lock de archivos
     if request.form.get("cancelar_ml") == "1" and get_estado(rid) == "reservada":
-        flash(_cancelar_en_ondepor(obj))
+        msg = _cancelar_en_ondepor(obj)
+        flash(msg)
+        # el que cargó la reserva tiene que enterarse aunque la cancele OTRO usuario
+        notificar(creador,
+                  "🚫 Turno cancelado" if msg.startswith("✅") else "⚠️ No se pudo cancelar",
+                  f"{fmt_fecha(obj.get('fecha', ''))} {obj.get('hora_desde', '')} · "
+                  f"lo canceló {session.get('usuario', '')}")
     # borrado atómico: re-leer bajo el lock justo antes de escribir (evita lost-update)
     with rb._io_lock:
         lista = [x for x in cargar("reservas.json", "reservas") if x.get("id") != rid]
