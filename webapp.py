@@ -471,10 +471,18 @@ def _subs_de(usuario=None):
 def notificar(usuario, titulo, cuerpo, url="/reservas"):
     """Manda un push SOLO a los dispositivos del usuario indicado (el que creó la reserva).
     Nunca lanza: si el push falla, la reserva ya está hecha igual."""
-    if not PUSH_ACTIVO or not usuario:
+    # ⚠ dejar rastro SIEMPRE: sin esto no hay manera de saber si un aviso salió o no.
+    # El 14/08/2026 no le llegó el push a Pablo y hubo que deducir a mano que el server
+    # lo había mandado bien — el log no decía nada, ni siquiera cuando no hay dispositivo.
+    if not PUSH_ACTIVO:
+        print(f"[push] push apagado (falta VAPID): no aviso a {usuario} · {titulo}", flush=True)
+        return 0
+    if not usuario:
+        print(f"[push] sin destinatario (la reserva no tiene 'creado_por') · {titulo}", flush=True)
         return 0
     subs = _subs_de(usuario)
     if not subs:
+        print(f"[push] {usuario}: NO tiene ningún dispositivo registrado · {titulo}", flush=True)
         return 0
     payload = json.dumps({"titulo": titulo, "cuerpo": cuerpo, "url": url}, ensure_ascii=False)
     enviados, muertas = 0, []
@@ -498,6 +506,9 @@ def notificar(usuario, titulo, cuerpo, url="/reservas"):
             quedan = [x for x in data.get("subs", {}).get(usuario, []) if x not in muertas]
             data.setdefault("subs", {})[usuario] = quedan
             rb.escribir_json("push_subs.json", data)
+    print(f"[push] {usuario}: {enviados}/{len(subs)} dispositivo(s)"
+          + (f", {len(muertas)} dado(s) de baja" if muertas else "")
+          + f" · {titulo}", flush=True)
     return enviados
 
 
