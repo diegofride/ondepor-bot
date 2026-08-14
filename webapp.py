@@ -862,6 +862,11 @@ def _ejecutar_cambio_prog(rid):
     st, msg = _hacer_cambio_jugadores(rsv, cp.get("jugadores", []), cp.get("reservador", ""))
     estado = {"success": "hecho", "revertida": "revertido", "perdida": "perdido"}.get(st, "fallado")
     _set_cambio_prog(rid, estado, str(msg)[:200])
+    # avisar SIEMPRE, salga bien o mal: esto corre solo y sin nadie mirando, y si el
+    # cambio no entró hay que enterarse ANTES del turno para hacerlo a mano.
+    notificar(cp.get("creado_por", ""),
+              "🔁 Carnets cambiados" if estado == "hecho" else "⚠️ El cambio de carnets NO salió",
+              f"{rsv.get('fecha')} {rsv.get('hora_desde')}: {str(msg)[:150]}")
     print(f"[manager] cambio programado {rid}: {estado} ({str(msg)[:120]})", flush=True)
 
 

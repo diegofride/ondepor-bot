@@ -1696,6 +1696,22 @@ class TestCambioEnProgramadas(BaseApp):
     def _cp(self):
         return (self.web.cargar("reservas.json", "reservas")[0] or {}).get("cambio_prog")
 
+    def test_avisa_por_push_cuando_corre_el_cambio(self):
+        """Corre solo y sin nadie mirando: si no entró hay que enterarse ANTES del turno.
+        El push va SOLO al que creó la reserva (Diego preguntó a quién le avisa)."""
+        avisos = []
+        self.web.notificar = lambda u, t, c, url="/reservas": avisos.append((u, t, c))
+        for st, esperado in (("success", "cambiados"), ("perdida", "NO salió")):
+            avisos.clear()
+            self._reserva({"reservador": "Diego Fride", "jugadores": [253510, 130962, 304064],
+                           "estado": "en_curso", "detalle": "", "hora_ej": "14:50",
+                           "ej_epoch": 0, "creado_por": "Diego"})
+            self.web._hacer_cambio_jugadores = lambda *a, **k: (st, "mensaje de prueba")
+            self.web._ejecutar_cambio_prog("prog-1")
+            self.assertEqual(len(avisos), 1, f"no avisó nada con {st}")
+            self.assertEqual(avisos[0][0], "Diego", "el push tiene que ir al creador")
+            self.assertIn(esperado, avisos[0][1])
+
     # -- CANCELACIÓN programada (pedido de Diego, 12/08/2026) --
     def _kp(self):
         return (self.web.cargar("reservas.json", "reservas")[0] or {}).get("cancel_prog")
