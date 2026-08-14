@@ -1696,6 +1696,80 @@ class TestCambioEnProgramadas(BaseApp):
     def _cp(self):
         return (self.web.cargar("reservas.json", "reservas")[0] or {}).get("cambio_prog")
 
+    # -- CANCELACIÓN programada (pedido de Diego, 12/08/2026) --
+    def _kp(self):
+        return (self.web.cargar("reservas.json", "reservas")[0] or {}).get("cancel_prog")
+
+    def test_programar_cancelacion(self):
+        r = self.cliente().post("/reservas/programar-cancelacion", data={
+            "cancelar_prog_id": "prog-1", "min_antes": "60"}, follow_redirects=True)
+        self.assertEqual(r.status_code, 200)
+        kp = self._kp()
+        self.assertEqual(kp["estado"], "pendiente")
+        self.assertEqual(kp["hora_ej"], "14:00")     # turno 15:00 - 60 min
+
+    def test_anular_la_cancelacion_conserva_el_turno(self):
+        self.cliente().post("/reservas/programar-cancelacion",
+                            data={"cancelar_prog_id": "prog-1", "min_antes": "60"})
+        c = self.cliente()
+        c.post("/reservas/cancel-prog-borrar/prog-1", follow_redirects=True)
+        self.assertIsNone(self._kp())
+        self.assertTrue(self.web.cargar("reservas.json", "reservas"), "borró la reserva")
+
+    def test_no_cancela_una_reserva_que_no_esta_confirmada(self):
+        """⚠ Sobre una reserva que todavía no se disparó, cancelar en OnDepor se
+        llevaría OTRO turno del día. Misma garantía que el cambio de nombres."""
+        self.cliente().post("/reservas/programar-cancelacion",
+                            data={"cancelar_prog_id": "prog-1", "min_antes": "60"})
+        with self.web.rb._io_lock:
+            lista = self.web.cargar("reservas.json", "reservas")
+            lista[0]["cancel_prog"]["ej_epoch"] = 0      # ya pasó la hora
+            self.web.guardar("reservas.json", "reservas", lista)
+        llamadas = []
+        self.web._cancelar_en_ondepor = lambda o: llamadas.append(o) or "✅ ok"
+        self.web._revisar_cancel_prog()
+        self.assertEqual(llamadas, [], "canceló sin turno confirmado")
+        self.assertEqual(self._kp()["estado"], "pendiente")
+
+    def test_si_el_turno_ya_empezo_no_cancela_nada(self):
+        ayer = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        with self.web.rb._io_lock:
+            lista = self.web.cargar("reservas.json", "reservas")
+            lista[0]["fecha"] = ayer
+            lista[0]["cancel_prog"] = {"estado": "pendiente", "detalle": "",
+                                       "hora_ej": "14:00", "ej_epoch": 0,
+                                       "creado_por": "Diego"}
+            self.web.guardar("reservas.json", "reservas", lista)
+        self.web.set_estado("prog-1", "reservada")
+        llamadas = []
+        self.web._cancelar_en_ondepor = lambda o: llamadas.append(o) or "✅ ok"
+        self.web._revisar_cancel_prog()
+        self.assertEqual(llamadas, [])
+        self.assertEqual(self._kp()["estado"], "vencido")
+
+    def test_cancelar_en_ondepor_no_se_lleva_el_turno_equivocado(self):
+        """⚠ Antes matcheaba solo por fecha+club: con dos turnos el mismo día cancelaba
+        el primero que encontraba. Corriendo solo, eso es un desastre."""
+        obj = {"reservador": "Diego Fride", "fecha": self.manana, "club_id": 1102,
+               "hora_desde": "15:00", "hora_hasta": "16:00"}
+        cancelados = []
+
+        class ApiFalsa:
+            def login(self):
+                pass
+
+            def mis_reservas(self, dias=30):
+                return [{"id": 111, "fecha": obj["fecha"], "club_id": 1102, "hora_to": "12:00"},
+                        {"id": 222, "fecha": obj["fecha"], "club_id": 1102, "hora_to": "16:00"}]
+
+            def cancelar_reserva(self, rid):
+                cancelados.append(rid)
+                return {"status": "success"}
+        self.web.OnDepor = lambda *a, **k: ApiFalsa()
+        msg = self.web._cancelar_en_ondepor(obj)
+        self.assertEqual(cancelados, [222], "canceló el turno de otra hora")
+        self.assertIn("✅", msg)
+
     def test_se_puede_programar_sobre_una_no_disparada(self):
         r = self.cliente().post("/reservas/programar-cambio", data={
             "programar_id": "prog-1", "reservador": "Diego Fride", "min_antes": "30",

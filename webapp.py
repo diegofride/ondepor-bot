@@ -865,6 +865,68 @@ def _ejecutar_cambio_prog(rid):
     print(f"[manager] cambio programado {rid}: {estado} ({str(msg)[:120]})", flush=True)
 
 
+def _set_cancel_prog(rid, estado, detalle=""):
+    """Actualiza el estado de la cancelación programada de una reserva (atómico)."""
+    with rb._io_lock:
+        lista = cargar("reservas.json", "reservas")
+        for x in lista:
+            if x.get("id") == rid and x.get("cancel_prog"):
+                x["cancel_prog"]["estado"] = estado
+                x["cancel_prog"]["detalle"] = detalle
+                break
+        guardar("reservas.json", "reservas", lista)
+
+
+def _ejecutar_cancel_prog(rid):
+    """Corre en un hilo: cancela en OnDepor el turno que estaba agendado para cancelar.
+    La reserva NO se borra de la lista: queda marcada como cancelada, con el resultado a
+    la vista (si se borrara sola, mañana nadie sabe qué pasó con esa cancha)."""
+    rsv = next((x for x in cargar("reservas.json", "reservas") if x.get("id") == rid), None)
+    cp = (rsv or {}).get("cancel_prog") or {}
+    if not rsv or cp.get("estado") != "en_curso":
+        return
+    msg = _cancelar_en_ondepor(rsv)          # llamada de RED: fuera de cualquier lock
+    ok = msg.startswith("✅")
+    _set_cancel_prog(rid, "hecho" if ok else "fallado", msg[:200])
+    if ok:
+        set_estado(rid, "cancelada", msg[:200])
+    notificar(cp.get("creado_por", ""),
+              "Turno cancelado" if ok else "NO se pudo cancelar el turno",
+              f"{rsv.get('fecha')} {rsv.get('hora_desde')}: {msg[:150]}")
+    print(f"[manager] cancelación programada {rid}: "
+          f"{'hecha' if ok else 'FALLÓ'} ({msg[:120]})", flush=True)
+
+
+def _revisar_cancel_prog(reservas=None):
+    """Dispara las cancelaciones programadas a su hora.
+
+    Mismas dos garantías que el cambio de nombres, y por el mismo motivo: si el turno ya
+    empezó no se toca nada, y si la reserva no está CONFIRMADA no se cancela — sobre una
+    reserva que todavía no se disparó, cancelar en OnDepor se llevaría otro turno."""
+    ahora = hora_real()
+    for rsv in (cargar("reservas.json", "reservas") if reservas is None else reservas):
+        cp = rsv.get("cancel_prog")
+        if not cp or cp.get("estado") != "pendiente":
+            continue
+        rid = rsv.get("id")
+        try:
+            turno_epoch = _epoch_ar(datetime.datetime.fromisoformat(
+                f"{rsv['fecha']}T{rsv['hora_desde']}:00"))
+        except (ValueError, TypeError):
+            continue
+        ej_epoch = cp.get("ej_epoch") or turno_epoch - CAMBIO_PROG_ANTES_SEG
+        if ahora >= turno_epoch:
+            _set_cancel_prog(rid, "vencido",
+                             "no se ejecutó a tiempo (el turno ya había empezado)")
+            continue
+        if ahora < ej_epoch:
+            continue                       # todavía no es hora
+        if get_estado(rid) != "reservada":
+            continue                       # ⚠ no hay turno confirmado que cancelar
+        _set_cancel_prog(rid, "en_curso")  # marcar ANTES del hilo (evita doble disparo)
+        threading.Thread(target=_ejecutar_cancel_prog, args=(rid,), daemon=True).start()
+
+
 def _revisar_cambios_prog(reservas=None):
     """Dispara los cambios de nombres programados a su hora. Cada cambio puede traer su
     propia hora (`ej_epoch`, la usa el cronograma: corre apenas se liberan los carnets
@@ -937,6 +999,7 @@ def _manager():
                 set_estado(rid, "en_curso")
                 threading.Thread(target=_disparar_job, args=(job,), daemon=True).start()
             _revisar_cambios_prog(datos[2])     # cambios de nombres agendados (turno - 10 min)
+            _revisar_cancel_prog(datos[2])      # cancelaciones agendadas
             _avisar_reservas_rotas(jobs, datos[2])   # push preventivo si algo no va a andar
             _revisar_vigilancias(jobs, datos[2])     # cazar canchas que se liberan
             _generar_recurrentes()                   # cargar las reservas recurrentes de la semana
@@ -1841,9 +1904,11 @@ def _conflictos_y_slots(jobs, reservadores, jugadores, foco_id):
             slots, res_pid)
 
 
-def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False):
+def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False, kp=None):
     """HTML de UNA fila del listado de reservas (título, chip de estado, metadatos,
-    notas y botones según estado/permisos). 'cp' = cambio de nombres programado."""
+    notas y botones según estado/permisos). 'cp' = cambio de nombres programado,
+    'kp' = cancelación programada. Los dos vienen aparte porque 'j' es el TRABAJO
+    armado, no la reserva cruda del archivo."""
     logtxt = _leer_log(j["id"]) if est in ("fallada", "reservada", "en_curso") else ""
     detalle = resumen_log(j["id"], logtxt) if logtxt else ""
     acomp = [x["nombre"] for x in j.get("jugadores_full", [])] + [str(f) for f in j.get("faltan_jugadores", [])]
@@ -1857,7 +1922,8 @@ def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False):
     # chip de estado (ícono + etiqueta amable)
     pic, plab = {"programada": ("clock", "Programada"), "reservada": ("check-circle", "Reservada"),
                  "fallada": ("x-circle", "Falló"), "en_curso": ("refresh", "En curso"),
-                 "vencida": ("clock", "Vencida")}.get(est, ("clock", est))
+                 "vencida": ("clock", "Vencida"),
+                 "cancelada": ("x-circle", "Cancelada")}.get(est, ("clock", est))
     pill = f'<span class="pill {est}">{icon(pic)} {plab}</span>'
     sede_ic, sede_lab = ("moon", "Noche") if j.get("club_id") == 504 else ("sun", "Día")
 
@@ -1916,6 +1982,30 @@ def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False):
             notas.append(f'<div class="nota">{icon("x")} Cambio no ejecutado: {esc(cp.get("detalle", ""))}</div>')
         else:
             notas.append(f'<div class="nota err">{icon("alert")} Cambio falló: {esc(cp.get("detalle", ""))}</div>')
+    kp = kp or {}
+    if kp:
+        hhk, estkp = esc(kp.get("hora_ej", "")), kp.get("estado", "")
+        if estkp == "pendiente":
+            anular = ""
+            if puede_ondepor:
+                anular = (f' <form method="post" style="display:inline"'
+                          f' action="{url_for("cancel_prog_borrar", rid=j["id"])}"'
+                          f' onsubmit="return confirm(\'¿Anular la cancelación programada? '
+                          f'El turno se conserva.\')">'
+                          f'<button class="sec" style="min-height:auto;padding:3px 10px;'
+                          f'font-size:.8rem">anular</button></form>')
+            notas.append(f'<div class="nota warn">{icon("trash")} <b>Se cancela sola a las '
+                         f'{hhk}</b> · el turno se libera en OnDepor{anular}</div>')
+        elif estkp == "en_curso":
+            notas.append(f'<div class="nota warn">{icon("refresh")} Cancelando el turno…</div>')
+        elif estkp == "hecho":
+            notas.append(f'<div class="nota">{icon("x")} Turno cancelado a las {hhk}</div>')
+        elif estkp == "vencido":
+            notas.append(f'<div class="nota">{icon("x")} Cancelación no ejecutada: '
+                         f'{esc(kp.get("detalle", ""))}</div>')
+        else:
+            notas.append(f'<div class="nota err">{icon("alert")} NO se pudo cancelar: '
+                         f'{esc(kp.get("detalle", ""))} — hacelo a mano.</div>')
     notas_html = "".join(notas)
 
     # botones (según estado y permisos)
@@ -1926,11 +2016,24 @@ def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False):
                            if puede_ondepor else "")
             prog_btn = (f'<a class="btn sec" href="{url_for("reservas")}?programar={j["id"]}" title="Dejar agendado el cambio de carnets para antes del turno">{icon("clock")} Programar cambio</a>'
                         if puede_ondepor and not cp else "")
+            cancel_btn = ""
+            if puede_ondepor and not kp:
+                cancel_btn = (
+                    f'<form method="post" style="display:inline"'
+                    f' action="{url_for("reserva_programar_cancelacion")}"'
+                    f' onsubmit="return confirm(\'El turno se va a cancelar SOLO a esa hora. '
+                    f'¿Programar?\')">'
+                    f'<input type="hidden" name="cancelar_prog_id" value="{esc(j["id"])}">'
+                    f'<label style="display:inline-flex;align-items:center;gap:6px">'
+                    f'<input name="min_antes" type="number" min="1" max="1380" value="60"'
+                    f' style="width:5.5em" title="minutos antes del turno">'
+                    f'<button class="sec" title="Dejar agendada la cancelación del turno">'
+                    f'{icon("clock")} Programar cancelación</button></label></form>')
             borrar = (f'<form method="post" action="{url_for("reserva_borrar", rid=j["id"])}"'
                       f' onsubmit="return confirm(\'Esto CANCELA el turno en OnDepor y lo saca de la lista. ¿Seguro?\')">'
                       f'<input type="hidden" name="cancelar_ml" value="1">'
                       f'<button class="danger" title="Cancelar el turno en OnDepor">{icon("trash")} Cancelar turno</button></form>')
-            botones = cambiar_btn + prog_btn + borrar
+            botones = cambiar_btn + prog_btn + cancel_btn + borrar
         else:
             editar_btn = f'<a class="btn sec" href="{url_for("reservas")}?editar={j["id"]}">{icon("edit")} Editar</a>'
             # el cambio de carnets también se puede dejar agendado ANTES de que dispare
@@ -2013,6 +2116,7 @@ def reservas():
 
     # ---- listas de reservas: programadas (aún no dispararon) y confirmadas (ya tomadas) ----
     cambio_map = {r.get("id"): r["cambio_prog"] for r in reservas_raw if r.get("cambio_prog")}
+    cancel_map = {r.get("id"): r["cancel_prog"] for r in reservas_raw if r.get("cancel_prog")}
     vigilar_map = {r.get("id"): r.get("vigilar") for r in reservas_raw}
     nom_por_id = {str(x.get("player_id")): x.get("nombre") for x in jugadores}
     filas_prog, filas_conf = "", ""
@@ -2020,7 +2124,8 @@ def reservas():
         est = get_estado(j["id"])
         fila = _fila_reserva(j, est, cambio_map.get(j["id"]),
                              creado_map.get(j["id"], ""), nom_por_id,
-                             vigilando=bool(vigilar_map.get(j["id"])))
+                             vigilando=bool(vigilar_map.get(j["id"])),
+                             kp=cancel_map.get(j["id"]))
         if est == "reservada":
             filas_conf += fila
         else:
@@ -2452,6 +2557,9 @@ def _guardar_reserva_desde_form(f):
             cp_viejo = orig_obj.get("cambio_prog")
             if cp_viejo:
                 nuevo["cambio_prog"] = _reencajar_cambio_prog(cp_viejo, orig_obj, nuevo)
+            kp_viejo = orig_obj.get("cancel_prog")     # la cancelación agendada, igual
+            if kp_viejo:
+                nuevo["cancel_prog"] = _reencajar_cambio_prog(kp_viejo, orig_obj, nuevo)
         lista.append(nuevo)
         guardar("reservas.json", "reservas", lista,
                 ayuda="Reservas precargadas; se disparan a la apertura (turno -24h +1min).")
@@ -2551,9 +2659,10 @@ def _hacer_cambio_jugadores(rsv, nuevos, nuevo_nombre):
 
 
 def _reencajar_cambio_prog(cp, viejo, nuevo):
-    """Al editar una reserva que tenía un cambio de carnets agendado, lo conserva. Si se
-    movió la fecha o la hora del turno, corre la ejecución los MISMOS minutos antes del
-    turno nuevo (si no, quedaría agendado para una hora que ya no significa nada)."""
+    """Al editar una reserva que tenía algo agendado (el cambio de carnets o la
+    cancelación), lo conserva. Si se movió la fecha o la hora del turno, corre la
+    ejecución los MISMOS minutos antes del turno nuevo (si no, quedaría agendado para
+    una hora que ya no significa nada)."""
     cp = dict(cp)
     if (viejo.get("fecha"), viejo.get("hora_desde")) == (nuevo["fecha"], nuevo["hora_desde"]):
         return cp
@@ -2699,6 +2808,80 @@ def reserva_programar_cambio():
     return redirect(url_for("reservas"))
 
 
+def _cuando_ejecutar(rsv, min_antes):
+    """(ej_epoch, hora_ej legible) para algo que corre 'min_antes' del turno."""
+    turno = datetime.datetime.fromisoformat(f"{rsv['fecha']}T{rsv['hora_desde']}:00")
+    ej_dt = turno - datetime.timedelta(minutes=min_antes)
+    hora_ej = ej_dt.strftime("%H:%M")
+    if ej_dt.date() != turno.date():
+        hora_ej = enc.DIAS[ej_dt.weekday()][:3].lower() + " " + hora_ej
+    return _epoch_ar(ej_dt), hora_ej
+
+
+@app.route("/reservas/programar-cancelacion", methods=["POST"])
+@login_requerido
+def reserva_programar_cancelacion(rid=None):
+    """Deja agendada la CANCELACIÓN del turno en OnDepor (pedido de Diego, 12/08/2026).
+    Vale sobre una reserva que todavía no se disparó: queda agendada y el ejecutor la
+    corre solo si para entonces está confirmada."""
+    rid = (rid or request.form.get("cancelar_prog_id", "")).strip()
+    rsv = next((x for x in cargar("reservas.json", "reservas") if x.get("id") == rid), None)
+    if not rsv:
+        flash("No encontré esa reserva.")
+        return redirect(url_for("reservas"))
+    if not puede_cambiar_reserva(rsv):
+        flash("La cancelación la programa quien creó la reserva (o quien tenga el permiso).")
+        return redirect(url_for("reservas"))
+    if get_estado(rid) not in ("reservada", "programada"):
+        flash("Esa reserva no tiene un turno que cancelar.")
+        return redirect(url_for("reservas"))
+    try:
+        min_antes = int(request.form.get("min_antes", "").strip()
+                        or CAMBIO_PROG_ANTES_SEG // 60)
+    except ValueError:
+        min_antes = CAMBIO_PROG_ANTES_SEG // 60
+    min_antes = max(1, min(23 * 60, min_antes))
+    try:
+        ej_epoch, hora_ej = _cuando_ejecutar(rsv, min_antes)
+    except (ValueError, TypeError):
+        flash("La reserva tiene fecha u hora inválida.")
+        return redirect(url_for("reservas"))
+    if hora_real() >= ej_epoch:
+        flash(f"Esa hora ya pasó (eran las {hora_ej}): elegí menos minutos o cancelá "
+              f"el turno directo.")
+        return redirect(url_for("reservas"))
+    with rb._io_lock:
+        lista = cargar("reservas.json", "reservas")
+        for x in lista:
+            if x.get("id") == rid:
+                x["cancel_prog"] = {"estado": "pendiente", "detalle": "",
+                                    "hora_ej": hora_ej, "ej_epoch": ej_epoch,
+                                    "creado_por": session.get("usuario", "")}
+                break
+        guardar("reservas.json", "reservas", lista)
+    flash(f"Cancelación programada: el turno se cancela solo a las {hora_ej} "
+          f"({min_antes} min antes).")
+    return redirect(url_for("reservas"))
+
+
+@app.route("/reservas/cancel-prog-borrar/<rid>", methods=["POST"])
+@login_requerido
+def cancel_prog_borrar(rid):
+    """Anula la cancelación agendada: el turno se conserva."""
+    with rb._io_lock:
+        lista = cargar("reservas.json", "reservas")
+        obj = next((x for x in lista if x.get("id") == rid), None)
+        if obj and not puede_cambiar_reserva(obj):
+            flash("La cancelación la maneja quien creó la reserva.")
+            return redirect(url_for("reservas"))
+        if obj and obj.pop("cancel_prog", None) is not None:
+            guardar("reservas.json", "reservas", lista)
+            flash("Cancelación anulada: el turno se conserva.")
+        else:
+            flash("Esa reserva no tenía una cancelación programada.")
+    return redirect(url_for("reservas"))
+
+
 @app.route("/reservas/cambio-prog-borrar/<rid>", methods=["POST"])
 @login_requerido
 def cambio_prog_borrar(rid):
@@ -2728,9 +2911,20 @@ def _cancelar_en_ondepor(obj):
         api.login()
         turnos = api.mis_reservas(30)
         club = str(obj.get("club_id", CLUB_DEFAULT))
-        match = next((t for t in turnos
-                      if str(t.get("fecha")) == str(obj.get("fecha"))
-                      and str(t.get("club_id")) == club), None)
+        # ⚠ matchear también por HORA. Antes se buscaba solo por fecha+club y, si ese
+        # reservador tenía dos turnos el mismo día, cancelaba el primero que encontraba —
+        # que puede ser OTRO. Con la cancelación PROGRAMADA (corre sola, sin nadie
+        # mirando) eso pasaba de susto a desastre.
+        mismos = [t for t in turnos
+                  if str(t.get("fecha")) == str(obj.get("fecha"))
+                  and str(t.get("club_id")) == club]
+        hasta = str(obj.get("hora_hasta", ""))[:5]
+        match = next((t for t in mismos if str(t.get("hora_to", ""))[:5] == hasta), None)
+        if not match and len(mismos) == 1:
+            match = mismos[0]              # uno solo ese día: no hay con qué confundirlo
+        elif not match and mismos:
+            return (f"Ese día hay {len(mismos)} turnos de ese carnet en el club y ninguno "
+                    f"termina {hasta}: no cancelo nada para no llevarme el equivocado.")
         if not match:
             return "En OnDepor no encontré ese turno (¿ya no estaba, o lo tomó otra cuenta?)."
         resp = api.cancelar_reserva(match["id"])
