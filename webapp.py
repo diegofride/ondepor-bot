@@ -2181,6 +2181,7 @@ def reservas():
     jugadores_ord = sorted(jugadores, key=lambda j: str(j.get("nombre", "")).lower())
     checks = "".join(
         f"<label class='jugitem' data-n='{esc(str(j['nombre']).lower())}' "
+        f"data-nom='{esc(j['nombre'])}' "
         f"style='display:flex;gap:8px;align-items:center;font-size:1rem;color:#222'>"
         f"<input type='checkbox' name='jug' value='{esc(j['player_id'])}'"
         f"{' checked' if j['player_id'] in ids_edit else ''} onchange='onCheck(event)'> "
@@ -2370,6 +2371,29 @@ def reservas():
       var c=document.querySelectorAll('#juglista input:checked').length;
       var cont=document.getElementById('cont');
       if(cont){ cont.textContent=c+'/3'; cont.style.color = c===3?'#157f3b':(c>3?'#cf3b3b':'#7a828e'); }
+      pintarChips();
+    }
+    // los elegidos como chips arriba del buscador: se VE quienes estan aunque la lista
+    // este scrolleada o filtrada, y el x de cada chip los saca sin buscarlos de nuevo
+    function pintarChips(){
+      var caja=document.getElementById('jugsel'); if(!caja) return;
+      caja.innerHTML='';
+      var marcados=document.querySelectorAll('#juglista input:checked');
+      caja.style.display = marcados.length ? 'flex' : 'none';
+      marcados.forEach(function(ch){
+        var item=ch.closest('.jugitem');
+        var nom=(item&&item.getAttribute('data-nom'))||'';
+        var b=document.createElement('button');
+        b.type='button';
+        b.style.cssText='display:inline-flex;align-items:center;gap:7px;padding:7px 12px;'+
+          'border:1px solid #bfe8cf;border-radius:999px;background:#eafaf1;color:#0e5c30;'+
+          'font-size:.92rem;cursor:pointer;min-height:38px';
+        b.title='Sacar a '+nom;
+        var x=document.createElement('b'); x.textContent='×'; x.setAttribute('aria-hidden','true');
+        b.appendChild(document.createTextNode(nom+' ')); b.appendChild(x);
+        b.onclick=function(){ ch.checked=false; contar(); };
+        caja.appendChild(b);
+      });
     }
     function limpiarBusqueda(){
       // al elegir un jugador se borra lo buscado y queda listo para buscar el siguiente
@@ -2479,6 +2503,7 @@ def reservas():
         </div>
         <div id="avisoSlot" class="msg warn" style="display:none">{icon('alert')} Ya hay una reserva cargada para esa fecha, hora y cancha.</div>
         <label>Jugadores acompañantes (elegí 3) — <span id="cont" style="color:#7a828e">0/3</span></label>
+        <div id="jugsel" style="display:none;flex-wrap:wrap;gap:6px;margin:6px 0 4px"></div>
         <input id="jugfiltro" placeholder="Buscar jugador…" oninput="filtrarJug()" style="margin:4px 0 8px">
         <div id="juglista" style="display:flex;flex-direction:column;gap:2px;max-height:260px;overflow:auto;border:1px solid var(--borde);border-radius:10px;padding:8px">{checks}</div>
         <div style="height:16px"></div>
