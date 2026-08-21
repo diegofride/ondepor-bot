@@ -104,7 +104,16 @@ input[type="checkbox"], input[type="radio"] {
 .row { display: flex; gap: 12px; flex-wrap: wrap; }
 .row > div { flex: 1; min-width: 150px; }
 
-/* ---------- Botones (sistema único, ≥44px) ---------- */
+/* ---------- Botones: TRES tamaños, no uno ----------
+   Habia un solo tamaño (46px) para todo, asi que un "Programar cambio" secundario
+   pesaba lo mismo que "Programar reserva" y ocupaba 197px de una pantalla de 375.
+   Una fila de reserva quedaba con 100px de botonera (39% de la fila) para 3 acciones
+   que ni siquiera entraban a lo ancho.
+     · grande (46px, el de siempre): la accion principal de un formulario.
+     · .btn-md (40px): acciones secundarias dentro de una tarjeta.
+     · .btn-sm (34px): acciones de fila, donde hay varias juntas y el texto es corto.
+   El minimo tactil de 44px se respeta donde importa —lo que tocas para AVANZAR—;
+   en las filas la separacion (gap 8px) y el area del ícono alcanzan. -------------- */
 button, .btn {
   min-height: 46px; background: var(--verde); color: #fff; border: 0;
   padding: 11px 18px; border-radius: var(--radio); font-size: .97rem; font-weight: 500;
@@ -115,6 +124,10 @@ button, .btn {
 button:hover, .btn:hover { background: var(--verde-h); }
 button:active, .btn:active { transform: scale(.985); }
 button:focus-visible, .btn:focus-visible { outline: 3px solid rgba(18,183,106,.35); outline-offset: 2px; }
+button.btn-md, .btn.btn-md { min-height: 40px; padding: 9px 14px; font-size: .92rem; }
+button.btn-sm, .btn.btn-sm { min-height: 34px; padding: 7px 12px; font-size: .86rem;
+  gap: 6px; border-radius: 8px; }
+button.btn-sm .ic, .btn.btn-sm .ic { width: 15px; height: 15px; }
 /* tabla de permisos por tipo de usuario */
 table.permisos { width: 100%; border-collapse: collapse; font-size: .9rem; min-width: 420px; }
 table.permisos th, table.permisos td { padding: 9px 8px; border-bottom: 1px solid var(--borde); text-align: center; }
@@ -182,7 +195,17 @@ ul.lista.compacta li .btn-ico { width: 40px; padding: 0; }
 .reserva .titulo { font-size: 1.02rem; font-weight: 600; color: var(--navy); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .reserva .meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 6px; font-size: .86rem; color: var(--texto-2); }
 .reserva .meta span { display: inline-flex; align-items: center; gap: 5px; }
-.reserva .acciones { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.reserva .acciones { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;
+  align-items: center; }
+/* toda accion DENTRO de una fila es secundaria: chica salvo que se pida lo contrario */
+.reserva .acciones button, .reserva .acciones .btn {
+  min-height: 34px; padding: 7px 12px; font-size: .86rem; gap: 6px; border-radius: 8px; }
+.reserva .acciones .ic { width: 15px; height: 15px; }
+.reserva .acciones input[type=number] { min-height: 34px; padding: 5px 8px;
+  font-size: .86rem; width: 4.2em; }
+/* la accion destructiva se separa del resto: no se toca sin querer */
+.reserva .acciones form:has(button.danger) { margin-left: auto; }
+.reserva .acciones .btn-ico { width: 34px; padding: 0; }
 
 /* ---------- Chips de estado ---------- */
 .pill {
@@ -257,7 +280,9 @@ li.vacio .ic { width: 30px; height: 30px; color: var(--borde-fuerte); margin-bot
   .card { padding: 14px; }
   .row > div { flex-basis: 100%; }
   .reserva .acciones { width: 100%; }
-  .reserva .acciones .btn, .reserva .acciones button { flex: 1 1 auto; }
+  /* antes cada boton hacia flex:1 y se estiraba hasta ocupar media pantalla; ahora
+     conservan su ancho natural y envuelven cuando hace falta */
+  .reserva .acciones .btn, .reserva .acciones button { flex: 0 0 auto; }
 }
 
 /* chip de jugador elegido (arriba del buscador, con la x para sacarlo) */
@@ -266,3 +291,16 @@ li.vacio .ic { width: 30px; height: 30px; color: var(--borde-fuerte); margin-bot
   color:var(--ok);font-size:.92rem;cursor:pointer;min-height:38px;font-family:inherit}
 .chip-jug:hover{border-color:var(--ok);}
 .chip-jug b{font-size:1.05rem;line-height:1}
+
+/* tarjeta plegable: el titulo es el boton de abrir (no hace falta JS) */
+details.plegable > summary { list-style: none; cursor: pointer; display: flex;
+  align-items: center; gap: 10px; }
+details.plegable > summary::-webkit-details-marker { display: none; }
+details.plegable > summary h2 { margin: 0; flex: 1; }
+details.plegable > summary::after { content: "+"; font-size: 1.5rem; line-height: 1;
+  color: var(--verde); font-weight: 600; width: 34px; height: 34px; flex: 0 0 34px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--borde-fuerte); border-radius: 999px; }
+details.plegable[open] > summary::after { content: "\2212"; }
+details.plegable[open] > summary { margin-bottom: 14px; }
+details.plegable > summary:hover::after { border-color: var(--verde); background: var(--ok-bg); }

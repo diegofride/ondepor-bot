@@ -2162,7 +2162,7 @@ def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False, kp=None):
                     f'solo, esos minutos antes de la hora de juego. ¿Lo dejo programado?\')">'
                     f'<input type="hidden" name="cancelar_prog_id" value="{esc(j["id"])}">'
                     f'<button class="sec" title="Dar de baja el turno solo, antes de jugarse">'
-                    f'{icon("clock")} Programar cancelación</button>'
+                    f'{icon("clock")} Cancelar después</button>'
                     f'<span style="white-space:nowrap;font-size:.85rem">'
                     f'<input name="min_antes" type="number" min="1" max="1380" value="60"'
                     f' style="width:4.6em" aria-label="minutos antes del turno">'
@@ -2170,7 +2170,7 @@ def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False, kp=None):
             borrar = (f'<form method="post" action="{url_for("reserva_borrar", rid=j["id"])}"'
                       f' onsubmit="return confirm(\'Esto CANCELA el turno en OnDepor y lo saca de la lista. ¿Seguro?\')">'
                       f'<input type="hidden" name="cancelar_ml" value="1">'
-                      f'<button class="danger" title="Cancelar el turno en OnDepor">{icon("trash")} Cancelar turno</button></form>')
+                      f'<button class="danger" title="Cancelar el turno en OnDepor">{icon("trash")} Cancelar</button></form>')
             botones = cambiar_btn + prog_btn + cancel_btn + borrar
         else:
             editar_btn = f'<a class="btn sec" href="{url_for("reservas")}?editar={j["id"]}">{icon("edit")} Editar</a>'
@@ -2595,10 +2595,14 @@ def reservas():
     }}
     </script>"""
 
+    # el formulario ocupaba el 53% de la pantalla y estaba ARRIBA de las listas: para ver
+    # tus turnos habia que scrollear una pantalla entera. Ahora va plegado, y se abre solo
+    # cuando estas editando/cambiando/programando (ahi el formulario ES la pantalla).
+    abierto = " open" if (editando or modo_cambiar or modo_programar) else ""
     cuerpo = f"""
     {caja_avisos}
-    <div class="card">
-      <h2>{icon(tit_ic)} {tit}</h2>
+    <details class="card plegable"{abierto}>
+      <summary><h2>{icon(tit_ic)} {tit}</h2></summary>
       <form method="post" action="{url_for('reserva_crear')}">
         {hidden_edit}{hidden_cambiar}
         <label>Turno</label>
@@ -2620,7 +2624,7 @@ def reservas():
         <div style="height:16px"></div>
         {bloque_botones}
       </form>
-    </div>
+    </details>
     <div class="card">
       <h2>{icon('list')} Reservas programadas</h2>
       <ul class="lista">{filas_prog}</ul>
