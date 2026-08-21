@@ -304,3 +304,23 @@ details.plegable > summary::after { content: "+"; font-size: 1.5rem; line-height
 details.plegable[open] > summary::after { content: "\2212"; }
 details.plegable[open] > summary { margin-bottom: 14px; }
 details.plegable > summary:hover::after { border-color: var(--verde); background: var(--ok-bg); }
+
+/* menu "…" de una fila: la accion principal queda afuera, el resto adentro */
+/* el panel se ancla a la FILA, no al boton: el "…" queda a la izquierda y, anclado a el,
+   el panel se salia de la pantalla. Con .acciones de referencia siempre cae adentro. */
+.reserva .acciones { position: relative; }
+.menu-acc { position: static; display: inline-block; }
+.menu-acc > summary { list-style: none; }
+.menu-acc > summary::-webkit-details-marker { display: none; }
+.menu-panel { display: none; }
+.menu-acc[open] > .menu-panel {
+  display: flex; flex-direction: column; gap: 6px; padding: 8px;
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; min-width: 215px;
+  max-width: min(280px, calc(100vw - 46px));
+  background: var(--carta); border: 1px solid var(--borde-fuerte);
+  border-radius: 12px; box-shadow: 0 10px 28px rgba(14,32,56,.16);
+}
+/* adentro del menu todo ocupa el ancho y se lee alineado a la izquierda */
+.menu-panel .item > form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.menu-panel button, .menu-panel .btn { width: 100%; justify-content: flex-start; }
+.menu-panel .item + .item { border-top: 1px solid var(--borde); padding-top: 6px; }

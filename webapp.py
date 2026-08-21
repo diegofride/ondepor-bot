@@ -364,6 +364,9 @@ _ICON_PATHS = {
     "refresh": '<path d="M20 11a8 8 0 1 0-.5 4"/><path d="M20 4v6h-6"/>',
     "alert": '<path d="M12 3 2 20h20L12 3z"/><path d="M12 9v5M12 17.4v.2"/>',
     "search": '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
+    # tres puntos: subtrazos de largo casi cero que, con stroke-linecap=round
+    # del SVG contenedor, se dibujan como puntos redondos
+    "mas": '<path d="M5 12h.01M12 12h.01M19 12h.01"/>',
     "x": '<path d="M6 6l12 12M6 18L18 6"/>',
     "trash": '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
     "edit": '<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>',
@@ -1210,6 +1213,24 @@ function marcarNav(){
 window.addEventListener('resize', marcarNav);
 document.addEventListener('DOMContentLoaded', marcarNav);
 
+// --- menu "..." de cada fila: <details> ya abre solo; esto lo CIERRA ---
+document.addEventListener('click', function(ev){
+  document.querySelectorAll('details.menu-acc[open]').forEach(function(d){
+    if(!d.contains(ev.target)) d.open = false;      // tocaste afuera
+  });
+});
+document.addEventListener('toggle', function(ev){
+  var d = ev.target;
+  if(d.tagName !== 'DETAILS' || !d.classList.contains('menu-acc') || !d.open) return;
+  document.querySelectorAll('details.menu-acc[open]').forEach(function(o){
+    if(o !== d) o.open = false;                     // uno solo abierto por vez
+  });
+}, true);
+document.addEventListener('keydown', function(ev){
+  if(ev.key === 'Escape')
+    document.querySelectorAll('details.menu-acc[open]').forEach(function(d){ d.open = false; });
+});
+
 // --- feedback en acciones lentas: spinner + evita el doble click ---
 // OJO con la fase: esto iba en CAPTURA y corría ANTES del confirm() de los formularios
 // con confirmación. Si decías que no, el form no se enviaba pero el botón quedaba girando
@@ -2038,6 +2059,26 @@ def _conflictos_y_slots(jobs, reservadores, jugadores, foco_id):
             slots, res_pid)
 
 
+def _menu_acciones(rid, items):
+    """La primera accion queda a la vista; el resto se guarda detras de un "…".
+
+    Antes cada fila mostraba 3 o 4 botones del mismo peso y no se sabia cual era EL que
+    ibas a usar. Es un <details>, o sea que no necesita JavaScript para abrirse: el JS de
+    abajo solo sirve para cerrarlo cuando tocas afuera o abris otro.
+    'items' = lista de bloques HTML ya armados, el primero es el principal."""
+    items = [x for x in items if x]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    resto = "".join(f'<div class="item">{x}</div>' for x in items[1:])
+    return (items[0] +
+            f'<details class="menu-acc" data-rid="{esc(rid)}">'
+            f'<summary class="btn sec btn-ico" title="Más acciones" '
+            f'aria-label="Más acciones">{icon("mas")}</summary>'
+            f'<div class="menu-panel">{resto}</div></details>')
+
+
 def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False, kp=None):
     """HTML de UNA fila del listado de reservas (título, chip de estado, metadatos,
     notas y botones según estado/permisos). 'cp' = cambio de nombres programado,
@@ -2171,16 +2212,18 @@ def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False, kp=None):
                       f' onsubmit="return confirm(\'Esto CANCELA el turno en OnDepor y lo saca de la lista. ¿Seguro?\')">'
                       f'<input type="hidden" name="cancelar_ml" value="1">'
                       f'<button class="danger" title="Cancelar el turno en OnDepor">{icon("trash")} Cancelar</button></form>')
-            botones = cambiar_btn + prog_btn + cancel_btn + borrar
+            botones = _menu_acciones(j["id"],
+                                     [cambiar_btn, prog_btn, cancel_btn, borrar])
         else:
             editar_btn = f'<a class="btn sec" href="{url_for("reservas")}?editar={j["id"]}">{icon("edit")} Editar</a>'
             # el cambio de carnets también se puede dejar agendado ANTES de que dispare
             # (caso típico: se reserva con carnets prestados y se devuelven después).
             # Solo en "programada": en fallada/vencida/rota no hay nada que cambiar.
+            prog_btn = ""
             if est == "programada" and puede_ondepor and not cp and not j.get("problema"):
-                editar_btn += (f'<a class="btn sec" href="{url_for("reservas")}?programar={j["id"]}"'
-                               f' title="Dejar agendado el cambio de carnets para antes del turno">'
-                               f'{icon("clock")} Programar cambio</a>')
+                prog_btn = (f'<a class="btn sec" href="{url_for("reservas")}?programar={j["id"]}"'
+                            f' title="Dejar agendado el cambio de carnets para antes del turno">'
+                            f'{icon("clock")} Programar cambio</a>')
             # cazar cancelaciones: solo tiene sentido si el turno YA abrió y no entró
             vig_btn = ""
             if est in ("fallada", "vencida") or vigilando:
@@ -2191,7 +2234,8 @@ def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False, kp=None):
             borrar = (f'<form method="post" action="{url_for("reserva_borrar", rid=j["id"])}"'
                       f' onsubmit="return confirm(\'¿Quitar esta reserva de la lista? (todavía no reservó nada en OnDepor)\')">'
                       f'<button class="sec btn-ico" aria-label="Quitar de la lista" title="Quitar de la lista">{icon("x")}</button></form>')
-            botones = editar_btn + vig_btn + borrar
+            botones = _menu_acciones(j["id"],
+                                     [editar_btn, vig_btn, prog_btn, borrar])
 
     acciones = f'<div class="acciones">{botones}</div>' if botones else ""
     return f"""<li class="reserva">
