@@ -33,7 +33,7 @@ from markupsafe import escape
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from ondepor_core import (OnDepor, calcular_apertura, hora_real, sincronizar_reloj,
-                          _epoch_ar, hoy_ar, ahora_ar)
+                          _epoch_ar, hoy_ar, ahora_ar, ubicar_turno)
 import reservar_bot as rb
 import encuesta as enc
 
@@ -405,8 +405,14 @@ CAMBIO_PROG_ANTES_SEG = 600      # el cambio de nombres programado se ejecuta 10
 CAMBIO_PROG_TOLERANCIA_SEG = 300  # cuánto se le perdona de atraso antes de darlo por vencido
 BACKUP_DIR = os.path.join(AQUI, "backups")
 BACKUP_DIAS = 14                 # cuántos días de backup diario se conservan
+# ⚠ TODOS los JSON que el código usa, no solo los obvios. Antes se copiaban 6 de 14 y
+# el que más dolía era roles.json: si se pierde, cargar_roles() vuelve CALLADO a los
+# permisos de fábrica — no da error, no avisa, y le cambia los permisos a todos.
 ARCHIVOS_DATOS = ("reservas.json", "estados.json", "db_jugadores.json",
-                  "db_reservadores.json", "usuarios.json", "historial.json")
+                  "db_reservadores.json", "usuarios.json", "historial.json",
+                  "roles.json", "recurrentes.json", "encuesta_config.json",
+                  "votos.json", "push_subs.json", "passkeys.json",
+                  "webconfig.json", "vapid.json")
 
 
 def _backup_diario():
@@ -824,6 +830,59 @@ def _cazar_cancelacion(rid):
         print(f"[vigilancia] {rid}: {str(e)[:120]}", flush=True)
 
 
+RECONCILIAR_CADA_SEG = 600       # cada cuánto se le pregunta a OnDepor qué hay de verdad
+_ultima_reconciliacion = 0.0     # epoch del último cruce (en memoria del proceso)
+
+
+def _reconciliar_con_ondepor(reservas_raw):
+    """Le pregunta a OnDepor qué turnos hay DE VERDAD y lo cruza con lo que dice el panel.
+
+    ⚠ Esta es la única parte del sistema que MIRA en vez de ACTUAR, y hasta ahora no
+    existía: la pantalla /reservas se armaba 100% de archivos locales, así que si el club
+    cancelaba un turno —o lo cancelaba otro socio desde la app de OnDepor— el panel decía
+    "Reservada" para siempre y nadie se enteraba hasta llegar a la cancha.
+
+    Solo DEGRADA lo que ya no está (reservada -> fallada) y avisa. Nunca marca algo como
+    confirmado por su cuenta: si OnDepor no contesta o contesta raro, no toca nada."""
+    confirmadas = [r for r in reservas_raw
+                   if get_estado(r.get("id")) == "reservada" and r.get("fecha")]
+    if not confirmadas:
+        return 0
+    # una sola consulta por CUENTA, no por reserva
+    por_cuenta = {}
+    for r in confirmadas:
+        por_cuenta.setdefault(r.get("reservador", ""), []).append(r)
+    creds = {x.get("nombre"): x for x in cargar("db_reservadores.json", "reservadores")}
+    caidas = 0
+    for nombre, suyas in por_cuenta.items():
+        cta = creds.get(nombre)
+        if not cta or not cta.get("clave"):
+            continue                       # sin credenciales no se puede preguntar
+        try:
+            api = OnDepor(cta["usuario"], cta["clave"], suyas[0].get("club_id", CLUB_DEFAULT))
+            api.login()
+            turnos = api.mis_reservas(30)
+        except Exception as e:
+            print(f"[reconciliar] no pude preguntar por {nombre}: {str(e)[:100]}", flush=True)
+            continue                       # OnDepor no contesta: NO se degrada nada
+        if not turnos:
+            continue                       # respuesta vacía: puede ser un error, no toco
+        for r in suyas:
+            hallado, _ = ubicar_turno(turnos, r["fecha"],
+                                      r.get("club_id", CLUB_DEFAULT),
+                                      r.get("hora_hasta", ""), estricto=True)
+            if hallado:
+                continue
+            caidas += 1
+            set_estado(r["id"], "fallada",
+                       "El turno YA NO ESTÁ en OnDepor (lo canceló el club o alguien más).")
+            notificar(r.get("creado_por", ""), "⚠️ Te quedaste sin la cancha",
+                      f"{fmt_fecha(r['fecha'])} {r.get('hora_desde', '')} · el turno ya no "
+                      f"figura en OnDepor. Lo marqué como caído en la app.")
+            print(f"[reconciliar] {r['id']}: ya no está en OnDepor", flush=True)
+    return caidas
+
+
 def _revisar_vigilancias(jobs, reservas_raw):
     """Lanza el chequeo de las reservas marcadas para vigilar (turno ya abierto y todavía
     no jugado). Espaciado para no martillar OnDepor."""
@@ -1009,20 +1068,34 @@ def _manager():
                 if falta > VENTANA_PRE_SEG:        # todavía lejos
                     continue
                 if falta < -VENTANA_VENCIDA_SEG:   # ya pasó hace rato: se venció
+                    # ⚠ "vencida" es el único final que significa "perdiste la cancha y ni
+                    # lo intenté" (el server estuvo caído en la apertura), y era el único
+                    # que no avisaba nada: te enterabas el sábado a la mañana.
                     set_estado(rid, "vencida")
+                    notificar(job.get("creado_por", ""), "⌛ Se pasó la hora de reservar",
+                              f"{fmt_fecha(job['fecha'])} {job['hora_desde']} · el bot no "
+                              f"pudo disparar a la apertura. Fijate si la cancha sigue libre.")
                     continue
                 # dentro de la ventana: disparar (disparar() espera el segundo exacto)
                 set_estado(rid, "en_curso")
                 threading.Thread(target=_disparar_job, args=(job,), daemon=True).start()
+            # ⚠ el latido va ACÁ, apenas termina el disparo, y no al final: si alguna de
+            # las tareas auxiliares de abajo falla siempre, /salud daría 503 para siempre
+            # mientras lo único que importa —tomar las canchas— sigue andando perfecto.
+            global _manager_vivo
+            _manager_vivo = time.time()         # latido para /salud
             _revisar_cambios_prog(datos[2])     # cambios de nombres agendados (turno - 10 min)
             _revisar_cancel_prog(datos[2])      # cancelaciones agendadas
             _avisar_reservas_rotas(jobs, datos[2])   # push preventivo si algo no va a andar
             _revisar_vigilancias(jobs, datos[2])     # cazar canchas que se liberan
+            global _ultima_reconciliacion            # cruzar contra OnDepor cada 10 min
+            if hora_real() - _ultima_reconciliacion > RECONCILIAR_CADA_SEG:
+                _ultima_reconciliacion = hora_real()
+                threading.Thread(target=_reconciliar_con_ondepor, args=(datos[2],),
+                                 daemon=True).start()
             _generar_recurrentes()                   # cargar las reservas recurrentes de la semana
             _limpiar_confirmadas_viejas(jobs)   # va DESPUÉS del loop: no borrar bajo sus pies
             _backup_diario()                    # copia de los JSON (una vez por día)
-            global _manager_vivo
-            _manager_vivo = time.time()         # latido para /salud
         except Exception as e:
             print("[manager] error:", e, flush=True)
         time.sleep(MANAGER_CICLO_SEG)

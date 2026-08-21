@@ -127,6 +127,179 @@ class TestHoraArgentina(BaseApp):
 # ----------------------------------------------------------------------
 #  2. Elección de cancha (criterio unificado)
 # ----------------------------------------------------------------------
+class TestReconciliacion(BaseApp):
+    """Lo unico del sistema que MIRA en vez de actuar: cruza el panel contra OnDepor."""
+
+    def _reserva(self, estado="reservada"):
+        obj = {"id": "rec-1", "club_id": 1102, "cancha": "3", "fecha": "2026-08-15",
+               "hora_desde": "15:00", "hora_hasta": "16:00", "single_double": 2,
+               "reservador": "Diego Fride", "jugadores": [253510, 130962, 304064],
+               "creado_por": "Diego"}
+        with open(os.path.join(self.tmp, "reservas.json"), "w", encoding="utf-8") as f:
+            json.dump({"reservas": [obj]}, f, ensure_ascii=False)
+        with open(os.path.join(self.tmp, "db_reservadores.json"), "w", encoding="utf-8") as f:
+            json.dump({"reservadores": [{"nombre": "Diego Fride", "usuario": "d@x.com",
+                                         "clave": "secreta", "player_id": 252966}]}, f)
+        self.web.set_estado("rec-1", estado)
+        return [obj]
+
+    def _api_falsa(self, turnos):
+        class Falsa:
+            def __init__(self, *a, **k):
+                pass
+
+            def login(self):
+                pass
+
+            def mis_reservas(self, dias=30):
+                return list(turnos)
+        return Falsa
+
+    def _parche(self, nombre, valor):
+        original = getattr(self.web, nombre)
+        setattr(self.web, nombre, valor)
+        self.addCleanup(setattr, self.web, nombre, original)
+
+    def test_si_el_turno_ya_no_esta_lo_marca_caido_y_avisa(self):
+        reservas = self._reserva()
+        avisos = []
+        self._parche("OnDepor", self._api_falsa([]))       # OnDepor dice: no tenes nada
+        self._parche("notificar", lambda u, t, c, url="/reservas": avisos.append((u, t)))
+        # una lista vacia puede ser un error de red, asi que NO alcanza para degradar
+        self.assertEqual(self.web._reconciliar_con_ondepor(reservas), 0)
+        self.assertEqual(self.web.get_estado("rec-1"), "reservada")
+        # pero si OnDepor contesta con OTROS turnos, el nuestro se cayo de verdad
+        self._parche("OnDepor", self._api_falsa(
+            [{"id": 9, "fecha": "2026-08-15", "club_id": 1102, "hora_to": "21:00"}]))
+        self.assertEqual(self.web._reconciliar_con_ondepor(reservas), 1)
+        self.assertEqual(self.web.get_estado("rec-1"), "fallada")
+        self.assertEqual([u for u, _ in avisos], ["Diego"])
+
+    def test_si_el_turno_esta_no_toca_nada(self):
+        reservas = self._reserva()
+        self._parche("OnDepor", self._api_falsa(
+            [{"id": 1, "fecha": "2026-08-15", "club_id": 1102, "hora_to": "16:00"}]))
+        self.assertEqual(self.web._reconciliar_con_ondepor(reservas), 0)
+        self.assertEqual(self.web.get_estado("rec-1"), "reservada")
+
+    def test_si_ondepor_no_contesta_no_degrada_nada(self):
+        """Sin esto, un corte de internet marcaria TODAS las canchas como caidas."""
+        reservas = self._reserva()
+
+        class Rota:
+            def __init__(self, *a, **k):
+                pass
+
+            def login(self):
+                raise RuntimeError("sin red")
+        self._parche("OnDepor", Rota)
+        self.assertEqual(self.web._reconciliar_con_ondepor(reservas), 0)
+        self.assertEqual(self.web.get_estado("rec-1"), "reservada")
+
+    def test_solo_mira_las_confirmadas(self):
+        reservas = self._reserva(estado="programada")
+        llamadas = []
+
+        class Espia:
+            def __init__(self, *a, **k):
+                llamadas.append(1)
+
+            def login(self):
+                pass
+
+            def mis_reservas(self, dias=30):
+                return []
+        self._parche("OnDepor", Espia)
+        self.web._reconciliar_con_ondepor(reservas)
+        self.assertEqual(llamadas, [], "le pregunto a OnDepor por una reserva sin confirmar")
+
+
+class TestUbicarTurno(BaseApp):
+    """UN solo criterio para decir 'este es el turno de esta reserva'. Los dos flujos que
+    lo usan CANCELAN en OnDepor, y uno corre solo desde el reloj."""
+    T = [{"id": 1, "fecha": "2026-08-15", "club_id": 1102, "hora_to": "16:00"},
+         {"id": 2, "fecha": "2026-08-15", "club_id": 1102, "hora_to": "18:00"},
+         {"id": 3, "fecha": "2026-08-16", "club_id": 1102, "hora_to": "12:00"}]
+
+    def test_elige_por_hora_y_no_el_mas_temprano(self):
+        """El bug: mis_reservas viene ordenada por hora, así que agarraba SIEMPRE el
+        primero. Cambiar los carnets del turno de las 17 cancelaba el de las 15."""
+        t, motivo = self.core.OnDepor.ubicar_turno(self.T, "2026-08-15", 1102, "18:00")
+        self.assertEqual(t["id"], 2)
+        self.assertEqual(motivo, "")
+
+    def test_con_varios_y_ninguno_que_coincida_no_toca_nada(self):
+        t, motivo = self.core.OnDepor.ubicar_turno(self.T, "2026-08-15", 1102, "21:00")
+        self.assertIsNone(t, "iba a cancelar un turno que no era")
+        self.assertIn("no toco nada", motivo)
+
+    def test_si_hay_uno_solo_ese_dia_no_hay_con_que_confundirlo(self):
+        t, _ = self.core.OnDepor.ubicar_turno(self.T, "2026-08-16", 1102, "99:99")
+        self.assertEqual(t["id"], 3)
+
+    def test_estricto_no_acepta_otro_turno_del_dia(self):
+        """Para RECONCILIAR la pregunta es '¿mi turno de las 15 sigue estando?': tener
+        otra cancha ese día no es una respuesta."""
+        solo_otro = [{"id": 9, "fecha": "2026-08-15", "club_id": 1102, "hora_to": "21:00"}]
+        t, _ = self.core.ubicar_turno(solo_otro, "2026-08-15", 1102, "16:00")
+        self.assertIsNotNone(t, "sin estricto, el unico del dia vale")
+        t2, motivo = self.core.ubicar_turno(solo_otro, "2026-08-15", 1102, "16:00",
+                                            estricto=True)
+        self.assertIsNone(t2)
+        self.assertIn("16:00", motivo)
+
+    def test_otro_club_no_cuenta(self):
+        t, motivo = self.core.OnDepor.ubicar_turno(self.T, "2026-08-15", 504, "16:00")
+        self.assertIsNone(t)
+        self.assertIn("no encontré", motivo.lower())
+
+
+class TestCambiarJugadoresUbica(BaseApp):
+    def _api(self, turnos, entra=False):
+        api = self.core.OnDepor.__new__(self.core.OnDepor)
+        api.club_id, api.svid, api.csrf = 1102, "x", "y"
+        api.mis_reservas = lambda dias=30: list(turnos)
+        api.buscar_jugadores_lista = lambda q: None
+        api.canceladas, api.retomas = [], []
+        api.cancelar_reserva = lambda rid: (api.canceladas.append(rid) or
+                                            {"status": "success"})
+
+        def reservar(f, hd, hh, jug, cancha_preferida="", single_double=2, telephone=""):
+            api.retomas.append((hd, hh, cancha_preferida))
+            return {"status": "success", "_cancha": {"nombre": "05"}} if entra else {"status": "no"}
+        api.reservar = reservar
+        return api
+
+    def test_no_cancela_el_turno_equivocado(self):
+        turnos = [{"id": 1, "fecha": "2026-08-15", "club_id": 1102, "hora_to": "16:00",
+                   "cancha_num": "3"},
+                  {"id": 2, "fecha": "2026-08-15", "club_id": 1102, "hora_to": "18:00",
+                   "cancha_num": "9"}]
+        api = self._api(turnos, entra=True)
+        r = api.cambiar_jugadores("2026-08-15", 1102, "17:00", "18:00", [1, 2, 3], [4, 5, 6])
+        self.assertEqual(r["status"], "success")
+        self.assertEqual(api.canceladas, [2], "canceló el turno de otra hora")
+
+    def test_la_red_de_seguridad_recupera_la_hora_QUE_SE_CANCELO(self):
+        """Antes usaba la hora que le pasaron por parámetro y nunca la del turno que
+        acababa de cancelar: si el match era otro, prometía recuperar y no podía."""
+        turnos = [{"id": 7, "fecha": "2026-08-15", "club_id": 1102, "hora_to": "16:00",
+                   "cancha_num": "3"}]
+        api = self._api(turnos, entra=False)
+        r = api.cambiar_jugadores("2026-08-15", 1102, "17:00", "18:00", [1, 2, 3], [4, 5, 6])
+        self.assertEqual(r["status"], "perdida")
+        # las ultimas 5 retomas son la red de seguridad: tienen que ir a 15:00-16:00
+        self.assertEqual(api.retomas[-1][:2], ("15:00", "16:00"))
+
+    def test_con_varios_turnos_dudosos_no_cancela_nada(self):
+        turnos = [{"id": 1, "fecha": "2026-08-15", "club_id": 1102, "hora_to": "16:00"},
+                  {"id": 2, "fecha": "2026-08-15", "club_id": 1102, "hora_to": "18:00"}]
+        api = self._api(turnos)
+        r = api.cambiar_jugadores("2026-08-15", 1102, "20:00", "21:00", [1, 2, 3], [4, 5, 6])
+        self.assertEqual(r["status"], "no_encontrada")
+        self.assertEqual(api.canceladas, [], "canceló igual sin saber cuál era")
+
+
 class TestCanchas(BaseApp):
     C = [{"court_id": 12739, "nombre": "01-QUINTA"},
          {"court_id": 12596, "nombre": "05-KINERET"},

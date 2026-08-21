@@ -112,10 +112,17 @@ def _jugadores(e=None):
 
 
 def esta_abierta(e):
+    """¿La encuesta sigue tomando votos?
+
+    ⚠ Antes esto hacía `ahora_ar().timestamp() + 3*3600`, y `.timestamp()` sobre un
+    datetime SIN huso usa el huso del proceso: en el server (UTC) daba bien y en la PC
+    de Diego (UTC-3) daba 3 horas adelantado, así que la encuesta se cerraba antes y la
+    suite de tests pasaba o fallaba según la hora del día. `cierra_epoch` se guarda con
+    _epoch_ar() (webapp.py), así que el "ahora" tiene que salir de la MISMA función."""
     if not e or e.get("estado") != "abierta":
         return False
     cierre = e.get("cierra_epoch")
-    return not cierre or ahora_ar().timestamp() + 3 * 3600 < cierre + 1
+    return not cierre or _epoch_ar(ahora_ar()) < cierre + 1
 
 
 # ----------------------------------------------------------------------

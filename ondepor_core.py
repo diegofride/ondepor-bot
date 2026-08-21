@@ -141,6 +141,35 @@ def _es_ocupada(r):
     return ("no disponible" in e) or ("ocupada" in e) or ("no est" in e and "disponible" in e)
 
 
+def ubicar_turno(turnos, fecha, club_id, hora_hasta="", estricto=False):
+    """De la lista de mis_reservas(), CUÁL es el turno de esta reserva.
+
+    ⚠ Criterio ÚNICO, y no es un detalle: antes cada flujo lo resolvía por su cuenta
+    mirando solo fecha+club, y como mis_reservas() viene ordenada por hora, con dos
+    turnos del mismo carnet ese día siempre agarraba el MÁS TEMPRANO — el equivocado.
+    Los dos flujos que lo usan CANCELAN, y uno corre solo desde el reloj.
+    Devuelve (turno, motivo): si el turno es None, el motivo explica por qué y el que
+    llama NO tiene que cancelar nada."""
+    mismos = [t for t in (turnos or [])
+              if str(t.get("fecha")) == str(fecha)
+              and str(t.get("club_id")) == str(club_id)]
+    if not mismos:
+        return None, "En OnDepor no encontré ese turno (¿ya no estaba, o lo tomó otra cuenta?)."
+    hasta = str(hora_hasta or "")[:5]
+    exacto = [t for t in mismos if str(t.get("hora_to", ""))[:5] == hasta]
+    if exacto:
+        return exacto[0], ""
+    if estricto:
+        # RECONCILIAR: acá la pregunta es "¿mi turno de las 15 sigue estando?", así que
+        # otro turno del mismo día NO sirve como respuesta. Sin esto, tener una cancha a
+        # las 21 haría creer que la de las 15 sigue viva.
+        return None, f"No hay ningún turno que termine {hasta} ese día."
+    if len(mismos) == 1:
+        return mismos[0], ""       # uno solo ese día: no hay con qué confundirlo
+    return None, (f"Ese día hay {len(mismos)} turnos de ese carnet en el club y ninguno "
+                  f"termina {hasta}: no toco nada para no llevarme el equivocado.")
+
+
 def calcular_apertura(fecha, hora_desde, horas_antes=24, minutos_extra=1, tz_offset=-3):
     """Hora en que se habilita el turno. Ej: 15/07 16:00 -> 14/07 16:01."""
     turno = datetime.datetime.fromisoformat(f"{fecha}T{hora_desde}:00")
@@ -639,6 +668,8 @@ class OnDepor:
         out.sort(key=lambda x: (str(x.get("fecha")), str(x.get("hora_to"))))
         return out
 
+    ubicar_turno = staticmethod(lambda *a, **k: ubicar_turno(*a, **k))   # atajo histórico
+
     # -- Cancelar una reserva por su id (confirmado con captura real; sin captcha real) --
     def cancelar_reserva(self, reservation_id):
         data = {
@@ -671,16 +702,19 @@ class OnDepor:
         tel_rebook = telephone_nuevo if api_nuevo else telephone
 
         # 1) ubicar la reserva -> reservation_id + cancha original (con la cuenta original)
-        match = None
-        for x in self.mis_reservas(dias=30):
-            if str(x.get("fecha")) == str(fecha) and str(x.get("club_id")) == str(club_id):
-                match = x
-                break
+        match, motivo = self.ubicar_turno(self.mis_reservas(dias=30), fecha, club_id, hora_hasta)
         if not match:
-            return {"status": "no_encontrada",
-                    "mensaje": "No encontré la reserva confirmada en OnDepor (¿ya no existe?). No cancelé nada."}
+            return {"status": "no_encontrada", "mensaje": motivo + " No cancelé nada."}
         rid = match["id"]
         cancha_pref = match.get("cancha_num") or ""   # la cancha que tiene HOY
+        # ⚠ la hora del turno que REALMENTE se va a cancelar, no la que vino por parámetro.
+        # Sin esto, si el match era otro turno, el paso 5 "recupero la original" devolvía
+        # una reserva en OTRO horario: la red de seguridad no podía cumplir su promesa.
+        try:                       # los turnos son de 1 h: 18:00 de fin -> 17:00 de inicio
+            h_real_desde = f"{int(str(match['hora_to'])[:2]) - 1:02d}:00"
+        except (ValueError, TypeError, KeyError):
+            h_real_desde = hora_desde
+        h_real_hasta = str(match.get("hora_to", ""))[:5] or hora_hasta
         # 'cancha_nueva' permite mudar la reserva a OTRA cancha (ej: entró en la 10 y se
         # quería la 1). La red de seguridad sigue recuperando la cancha ORIGINAL.
         cancha_rebook = str(cancha_nueva or "").strip() or cancha_pref
@@ -710,7 +744,7 @@ class OnDepor:
 
         # 5) RED DE SEGURIDAD: recuperar la reserva ORIGINAL (self + jugadores viejos)
         for _ in range(5):
-            rb2 = self.reservar(fecha, hora_desde, hora_hasta, viejos_players,
+            rb2 = self.reservar(fecha, h_real_desde, h_real_hasta, viejos_players,
                                 cancha_preferida=cancha_pref, single_double=single_double,
                                 telephone=telephone)
             if rb2.get("status") == "success":
