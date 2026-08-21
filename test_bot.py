@@ -214,6 +214,81 @@ class TestReconciliacion(BaseApp):
         self.assertEqual(llamadas, [], "le pregunto a OnDepor por una reserva sin confirmar")
 
 
+class TestMotorDeAcciones(BaseApp):
+    """El punto de unificar: las garantias se escriben UNA vez y valen para todas las
+    acciones. Antes estaban copiadas y cuando se arreglo una no se arreglo la otra."""
+
+    def test_las_dos_acciones_estan_registradas(self):
+        self.assertEqual(set(self.web.ACCIONES_PROGRAMADAS),
+                         {"cambio_prog", "cancel_prog"})
+
+    def _reserva(self, campo, estado_reserva, ej_epoch, fecha=None):
+        manana = fecha or (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+        obj = {"id": "acc-1", "club_id": 1102, "cancha": "3", "fecha": manana,
+               "hora_desde": "15:00", "hora_hasta": "16:00", "single_double": 2,
+               "reservador": "Diego Fride", "jugadores": [253510, 130962, 304064],
+               "creado_por": "Diego",
+               campo: {"estado": "pendiente", "detalle": "", "hora_ej": "14:50",
+                       "ej_epoch": ej_epoch, "creado_por": "Diego"}}
+        with open(os.path.join(self.tmp, "reservas.json"), "w", encoding="utf-8") as f:
+            json.dump({"reservas": [obj]}, f, ensure_ascii=False)
+        self.web.set_estado("acc-1", estado_reserva)
+        return obj
+
+    def _estado(self, campo):
+        r = self.web.cargar("reservas.json", "reservas")[0]
+        return (r.get(campo) or {}).get("estado")
+
+    def test_ninguna_accion_corre_sobre_una_reserva_sin_confirmar(self):
+        """La garantia mas cara: sobre una reserva que no se disparo, actuar en OnDepor
+        se lleva OTRO turno del dia. Vale para las DOS acciones."""
+        for campo in ("cambio_prog", "cancel_prog"):
+            corridas = []
+            original = self.web._correr_accion
+            self.web._correr_accion = lambda c, r: corridas.append(c)
+            try:
+                self._reserva(campo, "programada", self.core.hora_real() - 5)
+                self.web._revisar_acciones_prog()
+                self.assertEqual(corridas, [], f"{campo} corrio sin turno confirmado")
+                self.assertEqual(self._estado(campo), "pendiente")
+            finally:
+                self.web._correr_accion = original
+
+    def test_ninguna_accion_corre_con_el_turno_ya_empezado(self):
+        ayer = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        for campo in ("cambio_prog", "cancel_prog"):
+            corridas = []
+            original = self.web._correr_accion
+            self.web._correr_accion = lambda c, r: corridas.append(c)
+            try:
+                self._reserva(campo, "reservada", 0, fecha=ayer)
+                self.web._revisar_acciones_prog()
+                self.assertEqual(corridas, [], f"{campo} corrio con el turno empezado")
+                self.assertEqual(self._estado(campo), "vencido")
+            finally:
+                self.web._correr_accion = original
+
+    def test_una_accion_que_revienta_no_queda_colgada_ni_muda(self):
+        """Sin esto, una excepcion dejaba la accion en 'en_curso' para siempre y sin aviso."""
+        avisos = []
+        original_n, original_a = self.web.notificar, dict(self.web.ACCIONES_PROGRAMADAS)
+        self.web.notificar = lambda u, t, c, url="/reservas": avisos.append(t)
+
+        def explota(rid):
+            raise RuntimeError("se cayo OnDepor")
+        self.web.ACCIONES_PROGRAMADAS["cancel_prog"] = ("cancelación", explota, False)
+        try:
+            self._reserva("cancel_prog", "reservada", 0)
+            self.web._set_accion("cancel_prog", "acc-1", "en_curso")
+            self.web._correr_accion("cancel_prog", "acc-1")
+            self.assertEqual(self._estado("cancel_prog"), "fallado")
+            self.assertEqual(len(avisos), 1, "no aviso que la accion se cayo")
+        finally:
+            self.web.notificar = original_n
+            self.web.ACCIONES_PROGRAMADAS.clear()
+            self.web.ACCIONES_PROGRAMADAS.update(original_a)
+
+
 class TestUbicarTurno(BaseApp):
     """UN solo criterio para decir 'este es el turno de esta reserva'. Los dos flujos que
     lo usan CANCELAN en OnDepor, y uno corre solo desde el reloj."""
@@ -1484,14 +1559,14 @@ class TestCronograma(BaseApp):
         self.assertEqual(len(cp["jugadores"]), 3)
 
     def test_el_ejecutor_respeta_la_hora_propia_del_cambio(self):
-        """_revisar_cambios_prog tiene que disparar por ej_epoch cuando existe,
+        """_revisar_acciones_prog tiene que disparar por ej_epoch cuando existe,
         no por el viejo default de turno - 10 min."""
         manana = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
         base = {"id": "cp-test", "fecha": manana, "hora_desde": "15:00",
                 "club_id": 1102, "reservador": "Ana", "jugadores": [1, 2, 3]}
         disparados = []
-        original = self.web._ejecutar_cambio_prog
-        self.web._ejecutar_cambio_prog = lambda rid: disparados.append(rid)
+        original = self.web._correr_accion
+        self.web._correr_accion = lambda campo, rid: disparados.append(rid)
         try:
             with self.web._estados_lock:
                 self.web._estados["cp-test"] = {"estado": "reservada"}
@@ -1499,16 +1574,16 @@ class TestCronograma(BaseApp):
             # ej_epoch en el futuro: aunque falten <10 min para nada, NO dispara
             rsv = dict(base, cambio_prog={"estado": "pendiente", "ej_epoch": ahora + 900,
                                           "reservador": "Ana", "jugadores": [1, 2, 3]})
-            self.web._revisar_cambios_prog([rsv])
+            self.web._revisar_acciones_prog([rsv])
             self.assertEqual(disparados, [])
             # ej_epoch ya pasado (y el turno no): dispara
             self._W("reservas.json", {"reservas": [dict(base, cambio_prog={
                 "estado": "pendiente", "ej_epoch": ahora - 5,
                 "reservador": "Ana", "jugadores": [1, 2, 3]})]})
-            self.web._revisar_cambios_prog()
+            self.web._revisar_acciones_prog()
             self.assertEqual(disparados, ["cp-test"])
         finally:
-            self.web._ejecutar_cambio_prog = original
+            self.web._correr_accion = original
             with self.web._estados_lock:
                 self.web._estados.pop("cp-test", None)
 
@@ -1910,7 +1985,7 @@ class TestCambioEnProgramadas(BaseApp):
                            "estado": "en_curso", "detalle": "", "hora_ej": "14:50",
                            "ej_epoch": 0, "creado_por": "Diego"})
             self._parche("_hacer_cambio_jugadores", lambda *a, **k: (st, "mensaje de prueba"))
-            self.web._ejecutar_cambio_prog("prog-1")
+            self.web._correr_accion("cambio_prog", "prog-1")
             self.assertEqual(len(avisos), 1, f"no avisó nada con {st}")
             self.assertEqual(avisos[0][0], "Diego", "el push tiene que ir al creador")
             self.assertIn(esperado, avisos[0][1])
@@ -1946,7 +2021,7 @@ class TestCambioEnProgramadas(BaseApp):
             self.web.guardar("reservas.json", "reservas", lista)
         llamadas = []
         self._parche("_cancelar_en_ondepor", lambda o: llamadas.append(o) or "✅ ok")
-        self.web._revisar_cancel_prog()
+        self.web._revisar_acciones_prog()
         self.assertEqual(llamadas, [], "canceló sin turno confirmado")
         self.assertEqual(self._kp()["estado"], "pendiente")
 
@@ -1962,7 +2037,7 @@ class TestCambioEnProgramadas(BaseApp):
         self.web.set_estado("prog-1", "reservada")
         llamadas = []
         self._parche("_cancelar_en_ondepor", lambda o: llamadas.append(o) or "✅ ok")
-        self.web._revisar_cancel_prog()
+        self.web._revisar_acciones_prog()
         self.assertEqual(llamadas, [])
         self.assertEqual(self._kp()["estado"], "vencido")
 
@@ -2038,7 +2113,7 @@ class TestCambioEnProgramadas(BaseApp):
                 "jugadores": [253510, 130962, 304064], "creado_por": "Diego",
                 "cambio_prog": {"estado": "pendiente", "reservador": "Diego Fride",
                                 "jugadores": [1, 2, 3], "ej_epoch": 1}}]}, f)
-        self.web._revisar_cambios_prog()
+        self.web._revisar_acciones_prog()
         cp = self.web.cargar("reservas.json", "reservas")[0]["cambio_prog"]
         self.assertEqual(cp["estado"], "vencido")
 
@@ -2063,7 +2138,7 @@ class TestCambioEnProgramadas(BaseApp):
         try:
             rsv = self.web.cargar("reservas.json", "reservas")[0]
             rsv["fecha"], rsv["hora_desde"] = self.manana, "15:00"
-            self.web._revisar_cambios_prog()
+            self.web._revisar_acciones_prog()
         finally:
             self.web._ejecutar_cambio_prog = orig
             with self.web._estados_lock:

@@ -34,10 +34,48 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from ondepor_core import (OnDepor, calcular_apertura, hora_real, sincronizar_reloj,
                           _epoch_ar, hoy_ar, ahora_ar, ubicar_turno)
+import sys
+import logging
+
 import reservar_bot as rb
 import encuesta as enc
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
+
+
+# ----------------------------------------------------------------------
+#  LOG del server: un solo lugar, con NIVEL y hora ARGENTINA
+# ----------------------------------------------------------------------
+# Antes eran 22 print() sueltos con un [prefijo] a mano. Iban al journal de systemd,
+# así que no se perdían, pero no había forma de filtrar por gravedad ni de saber si una
+# línea era un aviso o un problema. Y el journal timestampea en UTC, que es justo lo que
+# no sirve para leer a las 3 de la mañana qué pasó a las 17:01 hora de acá.
+class _HoraAR(logging.Formatter):
+    """Estampa la hora de Argentina, no la del server (que corre en UTC)."""
+
+    def formatTime(self, record, datefmt=None):
+        return ahora_ar().strftime(datefmt or "%d/%m %H:%M:%S")
+
+
+def _armar_log():
+    raiz = logging.getLogger("reservame")
+    if raiz.handlers:                       # ya configurado (import doble en tests)
+        return raiz
+    h = logging.StreamHandler(sys.stdout)
+    h.setFormatter(_HoraAR("%(asctime)s %(levelname)-7s [%(name)s] %(message)s"))
+    raiz.addHandler(h)
+    raiz.setLevel(logging.INFO)
+    raiz.propagate = False
+    return raiz
+
+
+_armar_log()
+
+
+def registro(que):
+    """Log de una parte del sistema: registro("manager").info("..."), .warning(), .error().
+    El nombre sale impreso entre corchetes, igual que el prefijo de antes."""
+    return logging.getLogger("reservame." + que)
 CLUB_DEFAULT = 1102
 # Las dos "sedes" del club, que en OnDepor son clubes distintos:
 #   Día (1102, 8-17h, 11 canchas)  y  Noche (504, 18-23h, 8 canchas, sin CHACRA).
@@ -429,7 +467,7 @@ def _backup_diario():
             try:
                 shutil.copy2(src, os.path.join(destino, f))
             except OSError as e:
-                print(f"[backup] no pude copiar {f}: {e}", flush=True)
+                registro("backup").warning(f"no pude copiar {f}: {e}")
     try:                                  # rotar: dejar solo los últimos BACKUP_DIAS
         dias = sorted(d for d in os.listdir(BACKUP_DIR)
                       if os.path.isdir(os.path.join(BACKUP_DIR, d)))
@@ -437,7 +475,7 @@ def _backup_diario():
             shutil.rmtree(os.path.join(BACKUP_DIR, viejo), ignore_errors=True)
     except OSError:
         pass
-    print(f"[backup] copia diaria {dia} lista", flush=True)
+    registro("backup").info(f"copia diaria {dia} lista")
     return True
 
 
@@ -481,14 +519,14 @@ def notificar(usuario, titulo, cuerpo, url="/reservas"):
     # El 14/08/2026 no le llegó el push a Pablo y hubo que deducir a mano que el server
     # lo había mandado bien — el log no decía nada, ni siquiera cuando no hay dispositivo.
     if not PUSH_ACTIVO:
-        print(f"[push] push apagado (falta VAPID): no aviso a {usuario} · {titulo}", flush=True)
+        registro("push").info(f"push apagado (falta VAPID): no aviso a {usuario} · {titulo}")
         return 0
     if not usuario:
-        print(f"[push] sin destinatario (la reserva no tiene 'creado_por') · {titulo}", flush=True)
+        registro("push").info(f"sin destinatario (la reserva no tiene 'creado_por') · {titulo}")
         return 0
     subs = _subs_de(usuario)
     if not subs:
-        print(f"[push] {usuario}: NO tiene ningún dispositivo registrado · {titulo}", flush=True)
+        registro("push").info(f"{usuario}: NO tiene ningún dispositivo registrado · {titulo}")
         return 0
     payload = json.dumps({"titulo": titulo, "cuerpo": cuerpo, "url": url}, ensure_ascii=False)
     enviados, muertas = 0, []
@@ -503,17 +541,16 @@ def notificar(usuario, titulo, cuerpo, url="/reservas"):
             if code in (404, 410):        # suscripción vencida: el navegador la dio de baja
                 muertas.append(s)
             else:
-                print(f"[push] error enviando a {usuario}: {str(e)[:120]}", flush=True)
+                registro("push").warning(f"error enviando a {usuario}: {str(e)[:120]}")
         except Exception as e:
-            print(f"[push] error inesperado: {str(e)[:120]}", flush=True)
+            registro("push").warning(f"error inesperado: {str(e)[:120]}")
     if muertas:                            # limpiar las que ya no existen
         with rb._io_lock:
             data = rb.leer_json("push_subs.json", {"subs": {}})
             quedan = [x for x in data.get("subs", {}).get(usuario, []) if x not in muertas]
             data.setdefault("subs", {})[usuario] = quedan
             rb.escribir_json("push_subs.json", data)
-    print(f"[push] {usuario}: {enviados}/{len(subs)} dispositivo(s)"
-          + (f", {len(muertas)} dado(s) de baja" if muertas else "")
+    registro("push").info(f"{usuario}: {enviados}/{len(subs)} dispositivo(s)"+ (f", {len(muertas)} dado(s) de baja" if muertas else "")
           + f" · {titulo}", flush=True)
     return enviados
 
@@ -631,7 +668,7 @@ def _registrar_resultado(job, est, detalle=""):
             cuerpo = f"{cuando} · {detalle or 'revisá el detalle en la app'}"
         notificar(creador, titulo, cuerpo)
     except Exception as e:
-        print(f"[historial] no pude registrar {rid}: {e}", flush=True)
+        registro("historial").warning(f"no pude registrar {rid}: {e}")
 
 
 def _disparar_job(job, esperar=True):
@@ -677,7 +714,7 @@ def _limpiar_confirmadas_viejas(jobs):
             os.remove(os.path.join(AQUI, "logs", f"{rid}.log"))
         except OSError:
             pass
-    print(f"[manager] limpieza: {len(viejas)} reserva(s) confirmada(s) ya jugadas, borradas", flush=True)
+    registro("manager").info(f"limpieza: {len(viejas)} reserva(s) confirmada(s) ya jugadas, borradas")
 
 
 DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
@@ -725,11 +762,11 @@ def _generar_recurrentes():
                 existentes.add(rid)
                 creadas.append((rid, rec))
             except Exception as e:
-                print(f"[recurrente] {rec.get('id')}: {e}", flush=True)
+                registro("recurrente").info(f"{rec.get('id')}: {e}")
         if creadas:
             guardar("reservas.json", "reservas", reservas)
     for rid, rec in creadas:
-        print(f"[recurrente] cargada {rid}", flush=True)
+        registro("recurrente").info(f"cargada {rid}")
         notificar(rec.get("creado_por", ""), "🔁 Reserva recurrente cargada",
                   f"{DIAS_SEMANA[int(rec['dia_semana'])]} {rec['hora']} · ya quedó programada, "
                   f"se dispara sola a la apertura.")
@@ -781,7 +818,7 @@ def _avisar_reservas_rotas(jobs, reservas_raw):
                   f"La de {cuando} NO se va a poder tomar: {motivo}. "
                   f"Se dispara en {horas} h.")
         _marcar_en_reserva(rid, "aviso_problema", True)
-        print(f"[aviso] reserva rota {rid}: avisado a {creador or '(sin creador)'}", flush=True)
+        registro("aviso").info(f"reserva rota {rid}: avisado a {creador or '(sin creador)'}")
 
 
 VIGILANCIA_CADA_SEG = 240        # cada cuánto se revisa si se liberó una cancha (4 min)
@@ -825,9 +862,9 @@ def _cazar_cancelacion(rid):
             notificar(rsv.get("creado_por", ""), "🎾 ¡Se liberó una cancha!",
                       f"Te tomé {fmt_fecha(job['fecha'])} {job['hora_desde']} · "
                       f"{desc_cancha(real.split('-')[0].lstrip('0') if '-' in real else '')}")
-            print(f"[vigilancia] {rid}: CAZADA", flush=True)
+            registro("vigilancia").warning(f"{rid}: CAZADA")
     except Exception as e:
-        print(f"[vigilancia] {rid}: {str(e)[:120]}", flush=True)
+        registro("vigilancia").info(f"{rid}: {str(e)[:120]}")
 
 
 RECONCILIAR_CADA_SEG = 600       # cada cuánto se le pregunta a OnDepor qué hay de verdad
@@ -863,7 +900,7 @@ def _reconciliar_con_ondepor(reservas_raw):
             api.login()
             turnos = api.mis_reservas(30)
         except Exception as e:
-            print(f"[reconciliar] no pude preguntar por {nombre}: {str(e)[:100]}", flush=True)
+            registro("reconciliar").warning(f"no pude preguntar por {nombre}: {str(e)[:100]}")
             continue                       # OnDepor no contesta: NO se degrada nada
         if not turnos:
             continue                       # respuesta vacía: puede ser un error, no toco
@@ -879,7 +916,7 @@ def _reconciliar_con_ondepor(reservas_raw):
             notificar(r.get("creado_por", ""), "⚠️ Te quedaste sin la cancha",
                       f"{fmt_fecha(r['fecha'])} {r.get('hora_desde', '')} · el turno ya no "
                       f"figura en OnDepor. Lo marqué como caído en la app.")
-            print(f"[reconciliar] {r['id']}: ya no está en OnDepor", flush=True)
+            registro("reconciliar").warning(f"{r['id']}: ya no está en OnDepor")
     return caidas
 
 
@@ -911,139 +948,143 @@ def _revisar_vigilancias(jobs, reservas_raw):
         threading.Thread(target=_cazar_cancelacion, args=(rid,), daemon=True).start()
 
 
-def _set_cambio_prog(rid, estado, detalle=""):
-    """Actualiza el estado del cambio de nombres programado de una reserva (atómico)."""
+# ======================================================================
+#  ACCIONES PROGRAMADAS: un solo motor para "hacé esto a tal hora"
+# ======================================================================
+# Antes esto eran DOS juegos de funciones gemelas (cambio de carnets y cancelación),
+# copiados uno del otro: _set_*, _ejecutar_* y _revisar_* por duplicado, con las mismas
+# reglas escritas dos veces. Cuando se arregló el matching por hora se arregló UNO SOLO
+# de los dos, y ese fue el bug. Ahora las reglas viven una sola vez acá y cada acción
+# aporta nada más que su nombre de campo y qué hacer.
+#
+# Las dos garantías, que valen para TODAS las acciones y por el mismo motivo:
+#   · si el turno ya empezó, no se toca nada;
+#   · si la reserva no está CONFIRMADA, tampoco — sobre una que no se disparó, cancelar
+#     en OnDepor se llevaría otro turno del día.
+
+
+def _set_accion(campo, rid, estado, detalle=""):
+    """Cambia el estado de una acción programada de una reserva (atómico)."""
     with rb._io_lock:
         lista = cargar("reservas.json", "reservas")
         for x in lista:
-            if x.get("id") == rid and x.get("cambio_prog"):
-                x["cambio_prog"]["estado"] = estado
-                x["cambio_prog"]["detalle"] = detalle
+            if x.get("id") == rid and x.get(campo):
+                x[campo]["estado"] = estado
+                x[campo]["detalle"] = detalle
                 break
         guardar("reservas.json", "reservas", lista)
 
 
-def _ejecutar_cambio_prog(rid):
-    """Corre en un hilo: hace en OnDepor el cambio de nombres que estaba programado."""
-    rsv = next((x for x in cargar("reservas.json", "reservas") if x.get("id") == rid), None)
-    cp = (rsv or {}).get("cambio_prog") or {}
-    if not rsv or cp.get("estado") != "en_curso":
-        return
-    st, msg = _hacer_cambio_jugadores(rsv, cp.get("jugadores", []), cp.get("reservador", ""))
-    estado = {"success": "hecho", "revertida": "revertido", "perdida": "perdido"}.get(st, "fallado")
-    _set_cambio_prog(rid, estado, str(msg)[:200])
-    # avisar SIEMPRE, salga bien o mal: esto corre solo y sin nadie mirando, y si el
-    # cambio no entró hay que enterarse ANTES del turno para hacerlo a mano.
-    notificar(cp.get("creado_por", ""),
-              "🔁 Carnets cambiados" if estado == "hecho" else "⚠️ El cambio de carnets NO salió",
-              f"{rsv.get('fecha')} {rsv.get('hora_desde')}: {str(msg)[:150]}")
-    print(f"[manager] cambio programado {rid}: {estado} ({str(msg)[:120]})", flush=True)
+def _set_cambio_prog(rid, estado, detalle=""):
+    _set_accion("cambio_prog", rid, estado, detalle)
 
 
 def _set_cancel_prog(rid, estado, detalle=""):
-    """Actualiza el estado de la cancelación programada de una reserva (atómico)."""
-    with rb._io_lock:
-        lista = cargar("reservas.json", "reservas")
-        for x in lista:
-            if x.get("id") == rid and x.get("cancel_prog"):
-                x["cancel_prog"]["estado"] = estado
-                x["cancel_prog"]["detalle"] = detalle
-                break
-        guardar("reservas.json", "reservas", lista)
+    _set_accion("cancel_prog", rid, estado, detalle)
+
+
+def _ejecutar_cambio_prog(rid):
+    """Hace en OnDepor el cambio de nombres agendado. Devuelve (ok, titulo, mensaje)."""
+    rsv = next((x for x in cargar("reservas.json", "reservas") if x.get("id") == rid), None)
+    cp = (rsv or {}).get("cambio_prog") or {}
+    st, msg = _hacer_cambio_jugadores(rsv, cp.get("jugadores", []), cp.get("reservador", ""))
+    estado = {"success": "hecho", "revertida": "revertido",
+              "perdida": "perdido"}.get(st, "fallado")
+    _set_cambio_prog(rid, estado, str(msg)[:200])
+    return (estado == "hecho",
+            "🔁 Carnets cambiados" if estado == "hecho"
+            else "⚠️ El cambio de carnets NO salió",
+            str(msg))
 
 
 def _ejecutar_cancel_prog(rid):
-    """Corre en un hilo: cancela en OnDepor el turno que estaba agendado para cancelar.
-    La reserva NO se borra de la lista: queda marcada como cancelada, con el resultado a
-    la vista (si se borrara sola, mañana nadie sabe qué pasó con esa cancha)."""
+    """Cancela en OnDepor el turno agendado. La reserva NO se borra de la lista: queda
+    marcada como cancelada, con el resultado a la vista (si se borrara sola, mañana nadie
+    sabe qué pasó con esa cancha). Devuelve (ok, titulo, mensaje)."""
     rsv = next((x for x in cargar("reservas.json", "reservas") if x.get("id") == rid), None)
-    cp = (rsv or {}).get("cancel_prog") or {}
-    if not rsv or cp.get("estado") != "en_curso":
-        return
     msg = _cancelar_en_ondepor(rsv)          # llamada de RED: fuera de cualquier lock
     ok = msg.startswith("✅")
     _set_cancel_prog(rid, "hecho" if ok else "fallado", msg[:200])
     if ok:
         set_estado(rid, "cancelada", msg[:200])
-    notificar(cp.get("creado_por", ""),
-              "Turno cancelado" if ok else "NO se pudo cancelar el turno",
-              f"{rsv.get('fecha')} {rsv.get('hora_desde')}: {msg[:150]}")
-    print(f"[manager] cancelación programada {rid}: "
-          f"{'hecha' if ok else 'FALLÓ'} ({msg[:120]})", flush=True)
+    return ok, ("🚫 Turno cancelado" if ok
+                else "⚠️ NO se pudo cancelar el turno"), msg
 
 
-def _revisar_cancel_prog(reservas=None):
-    """Dispara las cancelaciones programadas a su hora.
-
-    Mismas dos garantías que el cambio de nombres, y por el mismo motivo: si el turno ya
-    empezó no se toca nada, y si la reserva no está CONFIRMADA no se cancela — sobre una
-    reserva que todavía no se disparó, cancelar en OnDepor se llevaría otro turno."""
-    ahora = hora_real()
-    for rsv in (cargar("reservas.json", "reservas") if reservas is None else reservas):
-        cp = rsv.get("cancel_prog")
-        if not cp or cp.get("estado") != "pendiente":
-            continue
-        rid = rsv.get("id")
-        try:
-            turno_epoch = _epoch_ar(datetime.datetime.fromisoformat(
-                f"{rsv['fecha']}T{rsv['hora_desde']}:00"))
-        except (ValueError, TypeError):
-            continue
-        ej_epoch = cp.get("ej_epoch") or turno_epoch - CAMBIO_PROG_ANTES_SEG
-        if ahora >= turno_epoch:
-            _set_cancel_prog(rid, "vencido",
-                             "no se ejecutó a tiempo (el turno ya había empezado)")
-            continue
-        if ahora < ej_epoch:
-            continue                       # todavía no es hora
-        if get_estado(rid) != "reservada":
-            continue                       # ⚠ no hay turno confirmado que cancelar
-        _set_cancel_prog(rid, "en_curso")  # marcar ANTES del hilo (evita doble disparo)
-        threading.Thread(target=_ejecutar_cancel_prog, args=(rid,), daemon=True).start()
+# nombre del campo -> (cómo se llama en los mensajes, qué hacer, si tolera atraso)
+ACCIONES_PROGRAMADAS = {
+    "cambio_prog": ("cambio de carnets", _ejecutar_cambio_prog, True),
+    "cancel_prog": ("cancelación", _ejecutar_cancel_prog, False),
+}
 
 
-def _revisar_cambios_prog(reservas=None):
-    """Dispara los cambios de nombres programados a su hora. Cada cambio puede traer su
-    propia hora (`ej_epoch`, la usa el cronograma: corre apenas se liberan los carnets
-    de los que entran); si no la trae, va al viejo default de turno - 10 min.
+def _correr_accion(campo, rid):
+    """Corre en un hilo: ejecuta la acción y avisa por push, salga bien o mal.
+
+    Se avisa SIEMPRE porque esto corre solo y sin nadie mirando: si no salió, hay que
+    enterarse ANTES del turno para hacerlo a mano."""
+    etiqueta, hacer, _ = ACCIONES_PROGRAMADAS[campo]
+    rsv = next((x for x in cargar("reservas.json", "reservas") if x.get("id") == rid), None)
+    ap = (rsv or {}).get(campo) or {}
+    if not rsv or ap.get("estado") != "en_curso":
+        return
+    try:
+        ok, titulo, msg = hacer(rid)
+    except Exception as e:                   # que una acción rota no muera en silencio
+        ok, titulo, msg = False, "⚠️ Falló la " + etiqueta, str(e)[:150]
+        _set_accion(campo, rid, "fallado", msg)
+    notificar(ap.get("creado_por", ""), titulo,
+              f"{fmt_fecha(rsv.get('fecha', ''))} {rsv.get('hora_desde', '')}: "
+              f"{str(msg)[:150]}")
+    registro("manager").warning(f"{etiqueta} programada {rid}: "
+          f"{'hecha' if ok else 'FALLO'} ({str(msg)[:120]})")
+
+
+def _revisar_acciones_prog(reservas=None):
+    """Dispara a su hora TODAS las acciones programadas de todas las reservas.
+
+    Cada acción puede traer su propia hora (`ej_epoch`, la usa el cronograma: corre apenas
+    se liberan los carnets de los que entran); si no la trae, va al default turno-10 min.
     'reservas' = lista ya cargada por el manager (evita releer el JSON en cada ciclo)."""
     ahora = hora_real()
     for rsv in (cargar("reservas.json", "reservas") if reservas is None else reservas):
-        cp = rsv.get("cambio_prog")
-        if not cp or cp.get("estado") != "pendiente":
-            continue
         rid = rsv.get("id")
-        try:
-            turno_epoch = _epoch_ar(datetime.datetime.fromisoformat(
-                f"{rsv['fecha']}T{rsv['hora_desde']}:00"))
-        except (ValueError, TypeError):
-            continue
-        ej_epoch = cp.get("ej_epoch") or turno_epoch - CAMBIO_PROG_ANTES_SEG
-        # el vencimiento se mira ANTES del estado: si no, el cambio de una reserva que
-        # nunca entró queda "pendiente" para siempre, prometiendo algo que no va a pasar
-        if ahora >= turno_epoch:           # el turno ya empezó: no se cambia nada
-            _set_cambio_prog(rid, "vencido", "no se ejecutó a tiempo (el turno ya había empezado)")
-            continue
-        if ahora < ej_epoch:
-            continue                       # todavía no es hora
-        if get_estado(rid) != "reservada":
-            continue                       # ⚠ ÚNICA garantía de que el turno EXISTE antes de
-            # cancelarlo en OnDepor: el form ya no lo valida (se puede agendar sobre una
-            # reserva que todavía no se disparó) y cambiar_jugadores ubica el turno por
-            # fecha+club, así que sobre una reserva no tomada cancelaría OTRO turno del día
-        if ahora > ej_epoch + CAMBIO_PROG_TOLERANCIA_SEG:
-            # la reserva se confirmó DESPUÉS de la hora agendada (falló y la cazó la
-            # vigilancia, o la app estuvo caída): cancelar y volver a tomar tan cerca del
-            # turno es jugarse la cancha recién ganada. Mejor avisar y que lo hagan a mano.
-            _set_cambio_prog(rid, "vencido",
-                             "la reserva se confirmó después de la hora del cambio: "
-                             "hacelo a mano si todavía llegás")
-            notificar(cp.get("creado_por", ""), "Cambio de carnets no ejecutado",
-                      f"{rsv.get('fecha')} {rsv.get('hora_desde')}: la reserva entró tarde, "
-                      f"el cambio quedó sin hacer.")
-            continue
-        _set_cambio_prog(rid, "en_curso")  # marcar ANTES de largar el hilo (evita doble disparo)
-        threading.Thread(target=_ejecutar_cambio_prog, args=(rid,), daemon=True).start()
+        for campo, (etiqueta, _hacer, tolera_atraso) in ACCIONES_PROGRAMADAS.items():
+            ap = rsv.get(campo)
+            if not ap or ap.get("estado") != "pendiente":
+                continue
+            try:
+                turno_epoch = _epoch_ar(datetime.datetime.fromisoformat(
+                    f"{rsv['fecha']}T{rsv['hora_desde']}:00"))
+            except (ValueError, TypeError):
+                continue
+            ej_epoch = ap.get("ej_epoch") or turno_epoch - CAMBIO_PROG_ANTES_SEG
+            # el vencimiento se mira ANTES del estado: si no, la acción de una reserva que
+            # nunca entró queda "pendiente" para siempre, prometiendo algo que no va a pasar
+            if ahora >= turno_epoch:
+                _set_accion(campo, rid, "vencido",
+                            "no se ejecutó a tiempo (el turno ya había empezado)")
+                continue
+            if ahora < ej_epoch:
+                continue                     # todavía no es hora
+            if get_estado(rid) != "reservada":
+                continue                     # no hay turno confirmado sobre el cual actuar
+            if tolera_atraso and ahora > ej_epoch + CAMBIO_PROG_TOLERANCIA_SEG:
+                # la reserva se confirmó DESPUÉS de la hora agendada (falló y la cazó la
+                # vigilancia, o la app estuvo caída): cancelar y volver a tomar tan cerca
+                # del turno es jugarse la cancha recién ganada. Mejor avisar y que lo
+                # hagan a mano.
+                _set_accion(campo, rid, "vencido",
+                            "la reserva se confirmó después de la hora: hacé la "
+                            + etiqueta + " a mano si todavía llegás")
+                notificar(ap.get("creado_por", ""), "La " + etiqueta + " no se ejecutó",
+                          f"{fmt_fecha(rsv.get('fecha', ''))} {rsv.get('hora_desde', '')}: "
+                          f"la reserva entró tarde y quedó sin hacer.")
+                continue
+            _set_accion(campo, rid, "en_curso")  # marcar ANTES del hilo (evita doble disparo)
+            threading.Thread(target=_correr_accion, args=(campo, rid), daemon=True).start()
+
+
 
 
 _manager_vivo = 0.0   # último latido del reloj interno (lo mira /salud)
@@ -1084,8 +1125,7 @@ def _manager():
             # mientras lo único que importa —tomar las canchas— sigue andando perfecto.
             global _manager_vivo
             _manager_vivo = time.time()         # latido para /salud
-            _revisar_cambios_prog(datos[2])     # cambios de nombres agendados (turno - 10 min)
-            _revisar_cancel_prog(datos[2])      # cancelaciones agendadas
+            _revisar_acciones_prog(datos[2])    # cambios de carnets y cancelaciones agendados
             _avisar_reservas_rotas(jobs, datos[2])   # push preventivo si algo no va a andar
             _revisar_vigilancias(jobs, datos[2])     # cazar canchas que se liberan
             global _ultima_reconciliacion            # cruzar contra OnDepor cada 10 min
@@ -1097,7 +1137,7 @@ def _manager():
             _limpiar_confirmadas_viejas(jobs)   # va DESPUÉS del loop: no borrar bajo sus pies
             _backup_diario()                    # copia de los JSON (una vez por día)
         except Exception as e:
-            print("[manager] error:", e, flush=True)
+            registro("manager").warning("error:", e, flush=True)
         time.sleep(MANAGER_CICLO_SEG)
 
 
@@ -1151,7 +1191,7 @@ HOJA = ('<link rel="stylesheet" href="{{ url_for(\'static\', filename=\'estilo.c
 # PWA: manifest + iconos + color de barra (Android) y registro del service worker
 PWA_HEAD = """
 <link rel="manifest" href="/static/manifest.json">
-<meta name="theme-color" content="#0e2038">
+<meta name="theme-color" content="var(--navy)">
 <link rel="icon" type="image/png" href="/static/icon-192.png">
 <link rel="apple-touch-icon" href="/static/icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1220,7 +1260,7 @@ BASE = """<!doctype html><html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Reservame ésta! - {{titulo}}</title>""" + HOJA + PWA_HEAD + """</head><body>
 <header>
-  <b><svg width="20" height="20" viewBox="0 0 100 100" style="vertical-align:-3px;display:inline-block"><circle cx="50" cy="50" r="46" fill="#c7e400" stroke="#9bbb00" stroke-width="2"/><path d="M28,12 Q56,50 28,88" fill="none" stroke="#fff" stroke-width="5"/><path d="M72,12 Q44,50 72,88" fill="none" stroke="#fff" stroke-width="5"/></svg> Reservame ésta!</b>
+  <b><svg width="20" height="20" viewBox="0 0 100 100" style="vertical-align:-3px;display:inline-block"><circle cx="50" cy="50" r="46" fill="var(--lima)" stroke="var(--lima-d)" stroke-width="2"/><path d="M28,12 Q56,50 28,88" fill="none" stroke="#fff" stroke-width="5"/><path d="M72,12 Q44,50 72,88" fill="none" stroke="#fff" stroke-width="5"/></svg> Reservame ésta!</b>
   <nav aria-label="Secciones">
     <a href="{{url_for('reservas')}}" class="{{'activo' if tab=='reservas' else ''}}" {{'aria-current=page' if tab=='reservas'}}>Reservas</a>
     <a href="{{url_for('jugadores')}}" class="{{'activo' if tab=='jugadores' else ''}}" {{'aria-current=page' if tab=='jugadores'}}>Jugadores</a>
@@ -1253,7 +1293,7 @@ LOGIN_HTML = """<!doctype html><html lang="es"><head><meta charset="utf-8">
 """ + HOJA + PWA_HEAD + """</head><body>
 <div class="login-fondo">
   <div class="login-caja">
-    <div class="login-marca"><svg width="30" height="30" viewBox="0 0 100 100" style="vertical-align:-6px;display:inline-block"><circle cx="50" cy="50" r="46" fill="#c7e400" stroke="#9bbb00" stroke-width="2"/><path d="M28,12 Q56,50 28,88" fill="none" stroke="#fff" stroke-width="5"/><path d="M72,12 Q44,50 72,88" fill="none" stroke="#fff" stroke-width="5"/></svg> Reservame ésta!</div>
+    <div class="login-marca"><svg width="30" height="30" viewBox="0 0 100 100" style="vertical-align:-6px;display:inline-block"><circle cx="50" cy="50" r="46" fill="var(--lima)" stroke="var(--lima-d)" stroke-width="2"/><path d="M28,12 Q56,50 28,88" fill="none" stroke="#fff" stroke-width="5"/><path d="M72,12 Q44,50 72,88" fill="none" stroke="#fff" stroke-width="5"/></svg> Reservame ésta!</div>
     <div class="card">
       <h2>{{ ic('user')|safe }} Entrar al panel</h2>
       {% with m = get_flashed_messages() %}{% if m %}<div class="msg warn">{{m|join(' ')}}</div>{% endif %}{% endwith %}
@@ -1268,7 +1308,7 @@ LOGIN_HTML = """<!doctype html><html lang="es"><head><meta charset="utf-8">
       <div id="pkZona" style="display:none;margin-top:10px">
         <button type="button" class="sec" style="width:100%" onclick="pkEntrar(this)">
           {{ ic('huella')|safe }} Entrar con huella</button>
-        <div id="pkMsg" style="margin-top:6px;font-size:.85rem;color:#b42318"></div>
+        <div id="pkMsg" style="margin-top:6px;font-size:.85rem;color:var(--error-fuerte)"></div>
       </div>
       <script src="/static/passkeys.js?v=1"></script>
       <script>
@@ -1361,7 +1401,7 @@ INSTALAR_HTML = """<!doctype html><html lang="es"><head><meta charset="utf-8">
 """ + HOJA + PWA_HEAD + """</head><body>
 <div class="login-fondo">
   <div class="login-caja">
-    <div class="login-marca"><svg width="30" height="30" viewBox="0 0 100 100" style="vertical-align:-6px;display:inline-block"><circle cx="50" cy="50" r="46" fill="#c7e400" stroke="#9bbb00" stroke-width="2"/><path d="M28,12 Q56,50 28,88" fill="none" stroke="#fff" stroke-width="5"/><path d="M72,12 Q44,50 72,88" fill="none" stroke="#fff" stroke-width="5"/></svg> Reservame ésta!</div>
+    <div class="login-marca"><svg width="30" height="30" viewBox="0 0 100 100" style="vertical-align:-6px;display:inline-block"><circle cx="50" cy="50" r="46" fill="var(--lima)" stroke="var(--lima-d)" stroke-width="2"/><path d="M28,12 Q56,50 28,88" fill="none" stroke="#fff" stroke-width="5"/><path d="M72,12 Q44,50 72,88" fill="none" stroke="#fff" stroke-width="5"/></svg> Reservame ésta!</div>
 
     <div class="card" id="paso-android" style="display:none">
       <h2>Instalar la app</h2>
@@ -2435,15 +2475,15 @@ def reservas():
         var id = parseInt(el.querySelector('input').value,10);
         var nota = el.querySelector('.nota-ocup');
         if(ocup.indexOf(id)>-1){
-          el.style.color='#9a6a12';
-          if(!nota){ nota=document.createElement('small'); nota.className='nota-ocup'; nota.style.marginLeft='6px'; nota.style.color='#9a6a12'; nota.style.fontSize='.8rem'; nota.style.whiteSpace='nowrap'; nota.textContent='· ya juega ese día'; el.appendChild(nota); }
+          el.style.color='var(--aviso)';
+          if(!nota){ nota=document.createElement('small'); nota.className='nota-ocup'; nota.style.marginLeft='6px'; nota.style.color='var(--aviso)'; nota.style.fontSize='.8rem'; nota.style.whiteSpace='nowrap'; nota.textContent='· ya juega ese día'; el.appendChild(nota); }
         } else { el.style.color='var(--texto)'; if(nota) nota.remove(); }
       });
     }
     function contar(){
       var c=document.querySelectorAll('#juglista input:checked').length;
       var cont=document.getElementById('cont');
-      if(cont){ cont.textContent=c+'/3'; cont.style.color = c===3?'#157f3b':(c>3?'#cf3b3b':'#7a828e'); }
+      if(cont){ cont.textContent=c+'/3'; cont.style.color = c===3?'var(--ok)':(c>3?'var(--error)':'var(--texto-3)'); }
       pintarChips();
     }
     // los elegidos como chips arriba del buscador: se VE quienes estan aunque la lista
@@ -2458,9 +2498,7 @@ def reservas():
         var nom=(item&&item.getAttribute('data-nom'))||'';
         var b=document.createElement('button');
         b.type='button';
-        b.style.cssText='display:inline-flex;align-items:center;gap:7px;padding:7px 12px;'+
-          'border:1px solid #bfe8cf;border-radius:999px;background:#eafaf1;color:#0e5c30;'+
-          'font-size:.92rem;cursor:pointer;min-height:38px';
+        b.className='chip-jug';
         b.title='Sacar a '+nom;
         var x=document.createElement('b'); x.textContent='×'; x.setAttribute('aria-hidden','true');
         b.appendChild(document.createTextNode(nom+' ')); b.appendChild(x);
@@ -2504,7 +2542,7 @@ def reservas():
         if(!t) return;
         var falta = t - ahora;
         el.textContent = txtFalta(falta);
-        el.style.color = (falta > 0 && falta < 300) ? '#b42318' : '';
+        el.style.color = (falta > 0 && falta < 300) ? 'var(--error-fuerte)' : '';
         if(falta > -5 && falta < prox) prox = falta;
       });
       // si algo está por dispararse (o recién disparó), refrescar para ver el resultado
@@ -2575,7 +2613,7 @@ def reservas():
           <div><label>Cancha</label><select name="cancha" {dis} onchange="chequearSlot()">{opts_cancha}</select></div>
         </div>
         <div id="avisoSlot" class="msg warn" style="display:none">{icon('alert')} Ya hay una reserva cargada para esa fecha, hora y cancha.</div>
-        <label>Jugadores acompañantes (elegí 3) — <span id="cont" style="color:#7a828e">0/3</span></label>
+        <label>Jugadores acompañantes (elegí 3) — <span id="cont" style="color:var(--texto-3)">0/3</span></label>
         <div id="jugsel" style="display:none;flex-wrap:wrap;gap:6px;margin:6px 0 4px"></div>
         <input id="jugfiltro" placeholder="Buscar jugador…" oninput="filtrarJug()" style="margin:4px 0 8px">
         <div id="juglista" style="display:flex;flex-direction:column;gap:2px;max-height:260px;overflow:auto;border:1px solid var(--borde);border-radius:10px;padding:8px">{checks}</div>

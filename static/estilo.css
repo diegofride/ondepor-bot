@@ -18,9 +18,11 @@
   --texto: #1c2330;
   --texto-2: #5c6470;        /* AA sobre blanco */
   --texto-3: #7a828e;
+  --texto-suave: #7a828e;    /* alias de --texto-3: se usaba sin existir y no pintaba nada */
 
   --ok: #157f3b;   --ok-bg: #e6f7ea;   --ok-bd: #b9e6c4;
   --error: #cf3b3b; --error-bg: #fdecec; --error-bd: #f3c9c9;
+  --error-fuerte: #b42318;   /* rojo de TEXTO chico: mas contraste que --error */
   --aviso: #9a6a12; --aviso-bg: #fdf3df; --aviso-bd: #f0dfae;
   --info: #245bd0;  --info-bg: #e8f0ff;  --info-bd: #c5d8fb;
 
@@ -131,7 +133,7 @@ table.permisos tbody tr:last-child td { border-bottom: 0; }
 .stat b { display: block; font-size: 1.5rem; line-height: 1.1; color: var(--navy); }
 .stat small { color: var(--texto-suave); font-size: .78rem; }
 .stat.ok b { color: var(--verde); }
-.stat.err b { color: #b42318; }
+.stat.err b { color: var(--error-fuerte); }
 
 /* aviso para activar las notificaciones */
 .avisos-box {
@@ -257,3 +259,10 @@ li.vacio .ic { width: 30px; height: 30px; color: var(--borde-fuerte); margin-bot
   .reserva .acciones { width: 100%; }
   .reserva .acciones .btn, .reserva .acciones button { flex: 1 1 auto; }
 }
+
+/* chip de jugador elegido (arriba del buscador, con la x para sacarlo) */
+.chip-jug{display:inline-flex;align-items:center;gap:7px;padding:7px 12px;
+  border:1px solid var(--ok-bd);border-radius:999px;background:var(--ok-bg);
+  color:var(--ok);font-size:.92rem;cursor:pointer;min-height:38px;font-family:inherit}
+.chip-jug:hover{border-color:var(--ok);}
+.chip-jug b{font-size:1.05rem;line-height:1}
