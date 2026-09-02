@@ -48,7 +48,7 @@ case "${1:-}" in
     ;;
   instalar)
     echo "Instalando lo que necesita el bot (requirements.txt)..."
-    "$PY" -m pip install --upgrade -r requirements.txt
+    ~/.local/bin/uv pip install --python "$PY" --upgrade -r requirements.txt
     ;;
   -h|--help|help|"")
     uso
