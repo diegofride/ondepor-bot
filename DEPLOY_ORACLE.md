@@ -36,7 +36,7 @@ servidor Linux siempre prendido.
 Desde tu PC (PowerShell) conectate por SSH (cambiá la ruta de la clave y la IP):
 
 ```
-ssh -i C:\ruta\a\tu-clave.key ubuntu@LA_IP_PUBLICA
+ssh -i ~/.ssh/tu-clave.key ubuntu@LA_IP_PUBLICA
 ```
 
 Ya adentro del servidor, instalá Python y subí el código:
@@ -49,7 +49,7 @@ mkdir -p ~/ondepor && cd ~/ondepor
 **Subí los archivos de la carpeta `OndeporBot`** al servidor (a `~/ondepor`).
 Dos formas fáciles:
 - **Opción A (scp):** desde tu PC, en otra terminal:
-  `scp -i C:\ruta\clave.key -r "C:\Users\diego\Claude Mercadolibre\OndeporBot\*" ubuntu@LA_IP:~/ondepor/`
+  `scp -i ~/.ssh/clave.key -r ~/claude-mercadolibre/OndeporBot/* ubuntu@LA_IP:~/ondepor/`
 - **Opción B (GitHub):** subimos la carpeta a un repo privado y hacés `git clone`.
 
 Instalá las dependencias:
