@@ -236,13 +236,25 @@ PRECARGA_ANTES_SEG = 40   # cuántos segundos antes de la apertura se hace la pr
 
 # court_id reales por club (capturados de OnDepor 25/07). Sirven para pedir una cancha puntual
 # aunque el turno FUENTE la tenga ocupada: verificado que el objetivo igual la acepta.
+# Desde septiembre de 2026 hay UN solo club (1102, de 8 a 23 h); el club "Noche" (504)
+# quedó deshabilitado en OnDepor. De 18 h en adelante no existe CHACRA (9-11).
 CANCHAS_POR_CLUB = {
     1102: {"1": 12739, "2": 12740, "3": 12741, "4": 12742,      # QUINTA
            "5": 12596, "6": 12597, "7": 13510, "8": 13511,      # KINERET
-           "9": 14425, "10": 14426, "11": 14427},               # CHACRA
-    504: {"1": 9620, "2": 9621, "3": 11031, "4": 11032,         # QUINTA
-          "5": 13266, "6": 13267, "7": 13508, "8": 13509},      # KINERET
+           "9": 14425, "10": 14426, "11": 14427},               # CHACRA (solo hasta las 17 h)
 }
+HORAS_POR_CLUB = {1102: [f"{h:02d}:00" for h in range(8, 24)]}
+NOCHE_DESDE = "18:00"
+CANCHAS_SOLO_DIA = {"9", "10", "11"}
+
+
+def canchas_para(club, hora):
+    """Mapa {num: court_id} del club válido a ESA hora: de noche se sacan las CHACRA para
+    que la pre-carga no gaste tiros en canchas que OnDepor va a rechazar."""
+    base = CANCHAS_POR_CLUB.get(club) or {}
+    if str(hora or "") >= NOCHE_DESDE:
+        return {n: c for n, c in base.items() if n not in CANCHAS_SOLO_DIA}
+    return dict(base)
 
 
 def _candidatos_fuente(job):
@@ -251,7 +263,7 @@ def _candidatos_fuente(job):
     abiertas), y después HOY (que está todo abierto y suele tener canchas libres a alguna
     hora). Devuelve lista de (fecha, hora_desde, hora_hasta) en el MISMO club."""
     club = job.get("club_id", 1102)
-    horas = [f"{h:02d}:00" for h in (range(8, 18) if club == 1102 else range(18, 24))]
+    horas = HORAS_POR_CLUB.get(club) or HORAS_POR_CLUB[1102]
 
     def fin(h):
         return f"{int(h[:2]) + 1:02d}:00"   # 23:00 -> 24:00 (no 00:00)
@@ -326,7 +338,7 @@ def disparar(job, esperar=True):
             if fuentes:
                 listo = api.precargar_objetivo(job["jugadores_full"], cancha_preferida=job["cancha"],
                                                fuentes=fuentes, single_double=job["single_double"],
-                                               canchas_club=CANCHAS_POR_CLUB.get(job.get("club_id")))
+                                               canchas_club=canchas_para(job.get("club_id"), job.get("hora_desde")))
             if listo:
                 log(rid, f"PRE-CARGADO con turno fuente {listo['fuente']}: {len(listo['canchas'])} "
                          f"canchas activadas + jugadores registrados. Al tick solo queda confirmar.")

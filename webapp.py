@@ -77,31 +77,56 @@ def registro(que):
     El nombre sale impreso entre corchetes, igual que el prefijo de antes."""
     return logging.getLogger("reservame." + que)
 CLUB_DEFAULT = 1102
-# Las dos "sedes" del club, que en OnDepor son clubes distintos:
-#   Día (1102, 8-17h, 11 canchas)  y  Noche (504, 18-23h, 8 canchas, sin CHACRA).
-# Se puede tener 1 turno en cada una el mismo día (por eso el conflicto se mira por club).
+# Desde septiembre de 2026 el club unificó TODOS los turnos en un solo club de OnDepor
+# (1102, de 8 a 23 h). El club "Noche" (504) quedó deshabilitado: OnDepor contesta
+# "Esta actividad no está habilitada en este momento" (verificado en vivo el 2/9/2026).
+# Lo que sí cambia con la hora es la grilla de canchas: de 18 h en adelante NO hay
+# CHACRA (9-11), solo QUINTA (1-4) y KINERET (5-8).
+# La estructura SEDES queda por si algún día vuelven a partir el club: con una sola
+# entrada el formulario no muestra el selector de turno.
+NOCHE_DESDE = "18:00"                              # desde esta hora la grilla es de 8 canchas
+CANCHAS_SOLO_DIA = {"9", "10", "11", "CHACRA"}     # canchas/zonas que no existen de noche
+
+
 def _canchas(pares):
     return [(str(n), f"{n} · {g}") for n, g in pares]
 
 SEDES = {
     "dia": {
-        "label": "Día (8 a 17 h)", "club_id": 1102,
-        "horas": [f"{h:02d}:00" for h in range(8, 18)],
+        "label": "Único (8 a 23 h)", "club_id": 1102,
+        "horas": [f"{h:02d}:00" for h in range(8, 24)],
         "canchas": _canchas([(1, "QUINTA"), (2, "QUINTA"), (3, "QUINTA"), (4, "QUINTA"),
                              (5, "KINERET"), (6, "KINERET"), (7, "KINERET"), (8, "KINERET"),
                              (9, "CHACRA"), (10, "CHACRA"), (11, "CHACRA")]),
         "zonas": [("QUINTA", "Zona QUINTA (canchas 1-4)"), ("KINERET", "Zona KINERET (canchas 5-8)"),
-                  ("CHACRA", "Zona CHACRA (canchas 9-11)")],
-    },
-    "noche": {
-        "label": "Noche (18 a 23 h)", "club_id": 504,
-        "horas": [f"{h:02d}:00" for h in range(18, 24)],
-        "canchas": _canchas([(1, "QUINTA"), (2, "QUINTA"), (3, "QUINTA"), (4, "QUINTA"),
-                             (5, "KINERET"), (6, "KINERET"), (7, "KINERET"), (8, "KINERET")]),
-        "zonas": [("QUINTA", "Zona QUINTA (canchas 1-4)"), ("KINERET", "Zona KINERET (canchas 5-8)")],
+                  ("CHACRA", "Zona CHACRA (canchas 9-11, solo hasta las 17 h)")],
     },
 }
 SEDE_POR_CLUB = {v["club_id"]: k for k, v in SEDES.items()}
+
+
+def cancha_vale_a(cancha, hora):
+    """False si esa cancha/zona no existe a esa hora (CHACRA solo hasta las 17 h)."""
+    return not (str(hora or "") >= NOCHE_DESDE and str(cancha or "").strip() in CANCHAS_SOLO_DIA)
+
+
+def sede_visual(hora):
+    """(ícono, etiqueta) para los listados: sol de día, luna de noche. Sale de la HORA,
+    ya no del club (antes noche era el club 504)."""
+    return ("moon", "Noche") if str(hora or "") >= NOCHE_DESDE else ("sun", "Día")
+
+
+def bloque_sede(sel, onchange):
+    """Selector de turno del formulario. Con una sola sede va oculto (un radio solo no
+    tiene sentido) y viaja como hidden para que el backend siga leyendo 'sede'."""
+    if len(SEDES) == 1:
+        return f"<input type='hidden' name='sede' value='{next(iter(SEDES))}'>"
+    radios = "".join(
+        "<label style='display:inline-flex;align-items:center;gap:6px;margin-right:18px;font-size:1rem;color:var(--texto)'>"
+        f"<input type='radio' name='sede' value='{k}'{' checked' if k == sel else ''} "
+        f"onchange='{onchange}'> {icon('moon' if k == 'noche' else 'sun')} {v['label']}</label>"
+        for k, v in SEDES.items())
+    return f"<label>Turno</label><div style='margin:2px 0 10px'>{radios}</div>"
 
 
 # ----------------------------------------------------------------------
@@ -2032,8 +2057,8 @@ def _conflictos_y_slots(jobs, reservadores, jugadores, foco_id):
     """Calcula, para avisar conflictos en el formulario:
       ocupados = {club: {fecha: [player_ids que ya juegan ese día en ese club]}}
       slots    = {"club|fecha|hora|cancha", ...} (para avisar turno repetido)
-    Día (1102) y noche (504) son clubes distintos: se puede jugar en los dos el mismo
-    día, por eso el conflicto se mira POR CLUB. Se ignora la reserva en edición."""
+    El conflicto se mira POR CLUB (hoy hay uno solo, 1102; antes día y noche eran clubes
+    distintos y se podía jugar en los dos el mismo día). Se ignora la reserva en edición."""
     res_pid = {}
     for r in reservadores:
         pid = r.get("player_id")
@@ -2100,7 +2125,7 @@ def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False, kp=None):
                  "vencida": ("clock", "Vencida"),
                  "cancelada": ("x-circle", "Cancelada")}.get(est, ("clock", est))
     pill = f'<span class="pill {est}">{icon(pic)} {plab}</span>'
-    sede_ic, sede_lab = ("moon", "Noche") if j.get("club_id") == 504 else ("sun", "Día")
+    sede_ic, sede_lab = sede_visual(j.get("hora_desde"))
 
     # cancha a mostrar: si ya está reservada, la que ENTRÓ (avisando si no es la pedida)
     cancha_disp = desc_cancha(j["cancha"])
@@ -2356,11 +2381,7 @@ def reservas():
         + "</optgroup>"
         + f"<option value=''{_selc('')}>Cualquiera libre</option>")
 
-    radios_sede = "".join(
-        "<label style='display:inline-flex;align-items:center;gap:6px;margin-right:18px;font-size:1rem;color:var(--texto)'>"
-        f"<input type='radio' name='sede' value='{k}'{' checked' if k == sede_ini else ''} "
-        f"onchange='cambiarSede()'> {icon('moon' if k == 'noche' else 'sun')} {v['label']}</label>"
-        for k, v in SEDES.items())
+    radios_sede = bloque_sede(sede_ini, "cambiarSede()")
 
     if modo_cambiar:
         tit = "Cambiar jugadores (reserva confirmada)"
@@ -2470,10 +2491,24 @@ def reservas():
     # ---- JS (string aparte para no chocar con las llaves del f-string) ----
     script_block = """
     <script>
-    var OCUP = __OCUP__;      // { "1102": {fecha:[ids]}, "504": {fecha:[ids]} }
+    var OCUP = __OCUP__;      // { "1102": {fecha:[ids]} }  (por club)
     var RESPID = __RESPID__;  // { "Nombre del reservador": player_id }
     var SLOTS = __SLOTS__;    // ["club|fecha|hora|cancha", ...]
     var SEDES = __SEDES__;
+    var NOCHE_DESDE = __NOCHE__;   // de esta hora en adelante no hay CHACRA
+    var SOLO_DIA = __SOLODIA__;    // canchas/zonas que se deshabilitan de noche
+    function filtrarCanchas(){
+      var ho=document.querySelector('select[name=hora]');
+      var ca=document.querySelector('select[name=cancha]');
+      if(!ho||!ca) return;
+      var noche = ho.value >= NOCHE_DESDE, cambio=false;
+      Array.prototype.forEach.call(ca.options, function(o){
+        var fuera = noche && SOLO_DIA.indexOf(o.value)>-1;
+        o.disabled = fuera;
+        if(fuera && o.selected){ o.selected=false; cambio=true; }
+      });
+      if(cambio){ ca.value=''; }   // estaba en CHACRA y se pasó a la noche: "Cualquiera libre"
+    }
     function sedeSel(){ var r=document.querySelector('input[name=sede]:checked'); return r?r.value:'dia'; }
     function clubSel(){ return String(SEDES[sedeSel()].club_id); }
     function fechaSel(){ var e=document.querySelector('input[name=fecha]'); return e?e.value:''; }
@@ -2494,6 +2529,7 @@ def reservas():
         o += "<option value=''>Cualquiera libre</option>";
         ca.innerHTML = o;
       }
+      filtrarCanchas();
     }
     function cambiarSede(){ rebuildDropdowns(); marcarJugadores(); chequearSlot(); }
     // avisa (NO bloquea) si el reservador elegido ya está ese día en ese club, sea como
@@ -2595,12 +2631,12 @@ def reservas():
       if(!editando && prox < 20){ setTimeout(function(){ location.reload(); }, 12000); }
     }
     document.addEventListener('DOMContentLoaded', function(){
-      marcarJugadores(); contar(); chequearSlot(); tick(); setInterval(tick, 1000);
+      marcarJugadores(); contar(); filtrarCanchas(); chequearSlot(); tick(); setInterval(tick, 1000);
     });
     document.addEventListener('submit', function(ev){
       if(ev.defaultPrevented) return;      // dijiste que no en el confirm: sin overlay
       var o=document.getElementById('ov'); if(o) o.classList.add('on'); });
-    </script>""".replace("__OCUP__", json.dumps(ocupados)).replace("__RESPID__", json.dumps(res_pid)).replace("__SLOTS__", json.dumps(sorted(slots))).replace("__SEDES__", json.dumps({k: {"club_id": v["club_id"], "horas": v["horas"], "canchas": v["canchas"], "zonas": v["zonas"]} for k, v in SEDES.items()}))
+    </script>""".replace("__OCUP__", json.dumps(ocupados)).replace("__RESPID__", json.dumps(res_pid)).replace("__SLOTS__", json.dumps(sorted(slots))).replace("__SEDES__", json.dumps({k: {"club_id": v["club_id"], "horas": v["horas"], "canchas": v["canchas"], "zonas": v["zonas"]} for k, v in SEDES.items()})).replace("__NOCHE__", json.dumps(NOCHE_DESDE)).replace("__SOLODIA__", json.dumps(sorted(CANCHAS_SOLO_DIA)))
 
     hidden_cambiar = f'<input type="hidden" name="cambiar_id" value="{cambiar_id}">' if modo_cambiar else ""
     if modo_programar:
@@ -2649,15 +2685,14 @@ def reservas():
       <summary><h2>{icon(tit_ic)} {tit}</h2></summary>
       <form method="post" action="{url_for('reserva_crear')}">
         {hidden_edit}{hidden_cambiar}
-        <label>Turno</label>
-        <div style="margin:2px 0 10px">{radios_sede}</div>
+        {radios_sede}
         <div class="row">
           <div><label>Reservador (jugador 1)</label><select name="reservador" required onchange="avisarReservador()">{opts_res}</select>
             <div id="avisoRes" class="nota warn" style="display:none;margin-top:6px"></div></div>
           <div><label>Fecha del turno</label><input type="date" name="fecha" value="{v_fecha}" {dis} onchange="marcarJugadores();chequearSlot()"></div>
         </div>
         <div class="row">
-          <div><label>Hora (turnos de 1 h)</label><select name="hora" {dis} onchange="chequearSlot()">{opts_hora}</select></div>
+          <div><label>Hora (turnos de 1 h)</label><select name="hora" {dis} onchange="filtrarCanchas();chequearSlot()">{opts_hora}</select></div>
           <div><label>Cancha</label><select name="cancha" {dis} onchange="chequearSlot()">{opts_cancha}</select></div>
         </div>
         <div id="avisoSlot" class="msg warn" style="display:none">{icon('alert')} Ya hay una reserva cargada para esa fecha, hora y cancha.</div>
@@ -2717,7 +2752,7 @@ def _guardar_reserva_desde_form(f):
 
     hora = f.get("hora", "").strip()
     if hora not in cfg["horas"]:
-        raise ValueError("esa hora no corresponde al turno elegido (día/noche)")
+        raise ValueError("esa hora no está en la grilla del club (turnos de 8 a 23 h)")
     hh, mm = map(int, hora.split(":"))
     fin = datetime.datetime(2000, 1, 1, hh, mm) + datetime.timedelta(hours=1)  # turnos de 1 h
 
@@ -2728,7 +2763,9 @@ def _guardar_reserva_desde_form(f):
     cancha = f.get("cancha", "").strip()
     canchas_validas = {v for v, _ in cfg["canchas"]} | {z for z, _ in cfg["zonas"]} | {""}
     if cancha not in canchas_validas:
-        raise ValueError("la cancha no corresponde al turno elegido")
+        raise ValueError("la cancha no existe en el club")
+    if not cancha_vale_a(cancha, hora):
+        raise ValueError("de 18 h en adelante no hay canchas CHACRA (9-11): elegí otra cancha o zona")
 
     jugadores = [int(x) for x in f.getlist("jug") if str(x).strip().isdigit()]
     jugadores = list(dict.fromkeys(jugadores))   # sin duplicados, conserva el orden
@@ -3289,7 +3326,7 @@ def recurrentes():
     for rec in sorted(recs, key=lambda r: (int(r.get("dia_semana", 0)), str(r.get("hora")))):
         mio = es_admin or rec.get("creado_por") == yo
         jugs = ", ".join(str(esc(nom_por_id.get(str(p), str(p)))) for p in rec.get("jugadores", []))
-        sede = "Noche" if int(rec.get("club_id", 1102)) == 504 else "Día"
+        sede_ic, sede = sede_visual(rec.get("hora"))
         activa = rec.get("activa", True)
         chip = (f'<span class="pill reservada">{icon("check")} Activa</span>' if activa
                 else f'<span class="pill vencida">Pausada</span>')
@@ -3303,7 +3340,7 @@ def recurrentes():
                 f'<button class="danger btn-ico" aria-label="Borrar" title="Borrar">{icon("trash")}</button></form>')
         filas += f"""<li class="reserva"><div class="sp">
           <div class="titulo"><span>{icon('repeat')} Todos los {DIAS_SEMANA[int(rec.get('dia_semana',0))].lower()} · {esc(rec.get('hora'))}</span>{chip}</div>
-          <div class="meta"><span>{icon('sun' if sede=='Día' else 'moon')} {sede}</span>
+          <div class="meta"><span>{icon(sede_ic)} {sede}</span>
             <span>{icon('pin')} {desc_cancha(rec.get('cancha',''))}</span>
             <span>{icon('users')} {esc(rec.get('reservador'))}{(', ' + jugs) if jugs else ''}</span></div>
           <small class="hint">se carga sola {RECURRENTE_ANTICIPO_DIAS} días antes · creada por {esc(rec.get('creado_por'))}</small>
@@ -3330,10 +3367,7 @@ def recurrentes():
         f"<input type='checkbox' name='jug' value='{esc(j['player_id'])}' onchange='alElegirRec(event)'> {esc(j['nombre'])}</label>"
         for j in sorted(jugadores, key=lambda j: str(j.get("nombre", "")).lower()))
 
-    radios = "".join(
-        "<label style='display:inline-flex;align-items:center;gap:6px;margin-right:18px'>"
-        f"<input type='radio' name='sede' value='{k}'{' checked' if k == 'dia' else ''} "
-        f"onchange='cambiarSedeRec()'> {v['label']}</label>" for k, v in SEDES.items())
+    radios = bloque_sede("dia", "cambiarSedeRec()")
 
     cuerpo = f"""
     <div class="card">
@@ -3341,11 +3375,10 @@ def recurrentes():
       <p><small class="hint">Se programa sola todas las semanas, {RECURRENTE_ANTICIPO_DIAS} días antes del turno.
         Después se dispara como cualquier otra a la apertura.</small></p>
       <form method="post" action="{url_for('recurrente_guardar')}">
-        <label>Turno</label>
-        <div style="margin:2px 0 10px">{radios}</div>
+        {radios}
         <div class="row">
           <div><label>Día de la semana</label><select name="dia_semana">{opts_dia}</select></div>
-          <div><label>Hora</label><select name="hora">{opts_hora}</select></div>
+          <div><label>Hora</label><select name="hora" onchange="filtrarCanchasRec()">{opts_hora}</select></div>
         </div>
         <div class="row">
           <div><label>Reservador (jugador 1)</label><select name="reservador" required>{opts_res}</select></div>
@@ -3364,6 +3397,20 @@ def recurrentes():
     </div>
     <script>
     var SEDES_REC = {json.dumps({k: {"horas": v["horas"], "canchas": v["canchas"], "zonas": v["zonas"]} for k, v in SEDES.items()})};
+    var NOCHE_DESDE = {json.dumps(NOCHE_DESDE)}, SOLO_DIA = {json.dumps(sorted(CANCHAS_SOLO_DIA))};
+    function filtrarCanchasRec(){{
+      // de 18 h en adelante no hay CHACRA: se deshabilitan esas opciones
+      var ho=document.querySelector('select[name=hora]'), ca=document.querySelector('select[name=cancha]');
+      if(!ho||!ca) return;
+      var noche = ho.value >= NOCHE_DESDE, cambio=false;
+      Array.prototype.forEach.call(ca.options, function(o){{
+        var fuera = noche && SOLO_DIA.indexOf(o.value)>-1;
+        o.disabled = fuera;
+        if(fuera && o.selected){{ o.selected=false; cambio=true; }}
+      }});
+      if(cambio){{ ca.value=''; }}
+    }}
+    document.addEventListener('DOMContentLoaded', filtrarCanchasRec);
     function filtrarRec(){{
       var q=(document.getElementById('jugfiltro').value||'').toLowerCase();
       document.querySelectorAll('#juglista .jugitem').forEach(function(el){{
@@ -3383,6 +3430,7 @@ def recurrentes():
       o += "<optgroup label='Por zona'>" + s.zonas.map(z=>"<option value='"+z[0]+"'>"+z[1]+"</option>").join('') + "</optgroup>";
       o += "<option value=''>Cualquiera libre</option>";
       document.querySelector('select[name=cancha]').innerHTML = o;
+      filtrarCanchasRec();
     }}
     </script>"""
     return pagina("Recurrentes", "recurrentes", cuerpo)
@@ -3398,7 +3446,10 @@ def recurrente_guardar():
     jugs = [int(x) for x in f.getlist("jug") if str(x).strip().isdigit()]
     jugs = list(dict.fromkeys(jugs))
     if hora not in cfg["horas"]:
-        flash("Esa hora no corresponde al turno elegido.")
+        flash("Esa hora no está en la grilla del club (turnos de 8 a 23 h).")
+        return redirect(url_for("recurrentes"))
+    if not cancha_vale_a(f.get("cancha", ""), hora):
+        flash("De 18 h en adelante no hay canchas CHACRA (9-11): elegí otra cancha o zona.")
         return redirect(url_for("recurrentes"))
     if not f.get("reservador", "").strip():
         flash("Elegí el reservador.")
@@ -4225,11 +4276,11 @@ def historial():
         aviso = ""
         if entro and ped.isdigit() and real_num and real_num != ped:
             aviso = f' <span class="nota warn">{icon("alert")} pedías la {esc(ped)}</span>'
-        sede = "Noche" if r.get("club_id") == 504 else "Día"
+        sede_ic, sede = sede_visual(r.get("hora"))
         jugs = ", ".join(str(esc(x)) for x in (r.get("jugadores") or []))
         filas += f"""<li class="reserva"><div class="sp">
           <div class="titulo"><span>{fmt_fecha(r.get('fecha'))} · {esc(r.get('hora'))}</span>{chip}</div>
-          <div class="meta"><span>{icon('sun' if sede=='Día' else 'moon')} {sede}</span>
+          <div class="meta"><span>{icon(sede_ic)} {sede}</span>
             <span>{icon('pin')} {cancha}{aviso}</span>
             <span>{icon('users')} {esc(r.get('reservador'))}{(', ' + jugs) if jugs else ''}</span></div>
           {f'<small class="hint">{esc(r.get("detalle"))}</small>' if r.get('detalle') else ''}

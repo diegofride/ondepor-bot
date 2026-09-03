@@ -324,7 +324,7 @@ class TestUbicarTurno(BaseApp):
         self.assertIn("16:00", motivo)
 
     def test_otro_club_no_cuenta(self):
-        t, motivo = self.core.OnDepor.ubicar_turno(self.T, "2026-08-15", 504, "16:00")
+        t, motivo = self.core.OnDepor.ubicar_turno(self.T, "2026-08-15", 999, "16:00")
         self.assertIsNone(t)
         self.assertIn("no encontré", motivo.lower())
 
@@ -479,24 +479,40 @@ class TestReservaRota(BaseApp):
 class TestPrecarga(BaseApp):
     def test_candidatos_usan_fecha_argentina(self):
         manana = (self.core.hoy_ar() + datetime.timedelta(days=1)).isoformat()
-        cands = self.rb._candidatos_fuente({"fecha": manana, "hora_desde": "18:00", "club_id": 504})
+        # 08:00 es el primer turno del día: no hay horas anteriores, el fuente va a ser HOY
+        cands = self.rb._candidatos_fuente({"fecha": manana, "hora_desde": "08:00", "club_id": 1102})
         self.assertTrue(cands)
         self.assertEqual(cands[0][0], self.core.hoy_ar().isoformat())
 
     def test_candidatos_del_mismo_dia_van_primero(self):
         manana = (self.core.hoy_ar() + datetime.timedelta(days=1)).isoformat()
-        cands = self.rb._candidatos_fuente({"fecha": manana, "hora_desde": "21:00", "club_id": 504})
+        cands = self.rb._candidatos_fuente({"fecha": manana, "hora_desde": "21:00", "club_id": 1102})
         self.assertEqual(cands[0], (manana, "20:00", "21:00"))
 
     def test_ultimo_turno_termina_en_24(self):
         """23:00 -> 24:00 (poner 00:00 da 'reservá al menos 1 hora')."""
         manana = (self.core.hoy_ar() + datetime.timedelta(days=1)).isoformat()
-        cands = self.rb._candidatos_fuente({"fecha": manana, "hora_desde": "18:00", "club_id": 504})
+        cands = self.rb._candidatos_fuente({"fecha": manana, "hora_desde": "18:00", "club_id": 1102})
         self.assertIn((self.core.hoy_ar().isoformat(), "23:00", "24:00"), cands)
 
     def test_mapa_de_canchas_completo(self):
         self.assertEqual(len(self.rb.CANCHAS_POR_CLUB[1102]), 11)
-        self.assertEqual(len(self.rb.CANCHAS_POR_CLUB[504]), 8)
+        self.assertNotIn(504, self.rb.CANCHAS_POR_CLUB)      # el club "Noche" ya no existe
+
+    def test_un_solo_club_de_8_a_23(self):
+        """Septiembre 2026: todos los turnos en el 1102, de 8 a 23 h."""
+        self.assertEqual(self.rb.HORAS_POR_CLUB[1102][0], "08:00")
+        self.assertEqual(self.rb.HORAS_POR_CLUB[1102][-1], "23:00")
+        self.assertEqual(len(self.web.SEDES), 1)
+        self.assertEqual(self.web.SEDES["dia"]["club_id"], 1102)
+        self.assertEqual(self.web.SEDES["dia"]["horas"], self.rb.HORAS_POR_CLUB[1102])
+
+    def test_de_noche_no_hay_chacra_en_la_precarga(self):
+        de_dia = self.rb.canchas_para(1102, "17:00")
+        de_noche = self.rb.canchas_para(1102, "18:00")
+        self.assertEqual(len(de_dia), 11)
+        self.assertEqual(sorted(de_noche, key=int), ["1", "2", "3", "4", "5", "6", "7", "8"])
+        self.assertEqual(self.rb.canchas_para(999, "10:00"), {})
 
     def test_precarga_40s_antes(self):
         self.assertEqual(self.rb.PRECARGA_ANTES_SEG, 40)
@@ -581,7 +597,7 @@ class TestPrecarga(BaseApp):
 class TestConfirmarObjetivo(BaseApp):
     def _api(self, ocupadas):
         api = self.core.OnDepor.__new__(self.core.OnDepor)
-        api.club_id, api.svid, api.csrf, api._ultimo_form = 504, "x", "y", {}
+        api.club_id, api.svid, api.csrf, api._ultimo_form = 1102, "x", "y", {}
         api.s = type("S", (), {"headers": {}, "cookies": type("C", (), {"update": lambda *a: None})()})()
         api.cont = {"confirm": 0, "paralelo": 0}
 
@@ -755,9 +771,24 @@ class TestFormulario(BaseApp):
         with self.assertRaises(ValueError):
             self._guardar(self._form(fecha=ayer))
 
-    def test_hora_que_no_es_del_turno_se_rechaza(self):
-        with self.assertRaises(ValueError):      # 22:00 es nocturno, no diurno
-            self._guardar(self._form(sede="dia", hora="22:00"))
+    def test_hora_fuera_de_la_grilla_se_rechaza(self):
+        with self.assertRaises(ValueError):      # el club abre a las 8
+            self._guardar(self._form(sede="dia", hora="07:00"))
+
+    def test_turno_de_noche_se_guarda_en_el_mismo_club(self):
+        """Desde septiembre 2026 la noche va en el 1102 (antes era el club 504)."""
+        rid = self._guardar(self._form(hora="22:00", cancha="3"))
+        r = next(x for x in self.web.cargar("reservas.json", "reservas") if x["id"] == rid)
+        self.assertEqual(r["club_id"], 1102)
+        self.assertEqual(r["hora_desde"], "22:00")
+
+    def test_de_noche_no_hay_chacra(self):
+        with self.assertRaises(ValueError):
+            self._guardar(self._form(hora="18:00", cancha="10"))
+        with self.assertRaises(ValueError):
+            self._guardar(self._form(hora="22:00", cancha="CHACRA"))
+        self._guardar(self._form(hora="17:00", cancha="10"))      # hasta las 17 sí
+        self._guardar(self._form(hora="22:00", cancha="KINERET"))  # y de noche otra zona
 
     def test_cancha_inexistente_se_rechaza(self):
         with self.assertRaises(ValueError):
