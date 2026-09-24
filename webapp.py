@@ -455,6 +455,67 @@ def desc_cancha(c):
     return f"zona {c.upper()}"
 
 
+DIAS_CORTOS = ("lun", "mar", "mié", "jue", "vie", "sáb", "dom")
+
+
+def dia_corto(f):
+    """'2026-09-26' -> 'sáb 26/09'. El año solo se escribe si NO es el de este año:
+    en el panel todas las reservas caen dentro de los próximos días y el año ocupaba
+    lugar sin decir nada, pero en el historial viejo sí hace falta."""
+    try:
+        d = datetime.date.fromisoformat(str(f))
+    except Exception:
+        return str(f or "")
+    fmt = "%d/%m" if d.year == hoy_ar().year else "%d/%m/%Y"
+    return f"{DIAS_CORTOS[d.weekday()]} {d.strftime(fmt)}"
+
+
+def plano_club(pedida, hora):
+    """El plano del club para el tablero: las 11 canchas agrupadas por zona.
+    Apagadas las que a esa hora no existen (CHACRA cierra a las 18), encendidas en
+    lima las que el bot va a intentar. No es decorado: dice entre cuántas pelea.
+    Sin el tinte de zona las canchas se leían como un skeleton de carga."""
+    pedida = str(pedida or "").strip()
+    zonas = [("QUINTA", range(1, 5), ""), ("KINERET", range(5, 9), " kineret"),
+             ("CHACRA", range(9, 12), " chacra")]
+    out = []
+    for nombre, nums, cls in zonas:
+        cuadros = ""
+        for n in nums:
+            if not cancha_vale_a(str(n), hora):
+                c = ""                     # a esa hora no se puede jugar ahí
+            elif pedida == str(n) or (pedida and pedida.upper() == nombre):
+                c = "posible on"           # la que pediste
+            else:
+                c = "posible"              # el bot la puede tomar si la tuya está ocupada
+            cuadros += f'<i class="{c}"></i>'
+        out.append(f'<div class="zona{cls}"><div class="canchas">{cuadros}</div>'
+                   f'<span class="et">{nombre}</span></div>')
+    return f'<div class="plano" aria-hidden="true">{"".join(out)}</div>'
+
+
+def chapa(pedida, real=""):
+    """La chapa de cancha que abre cada fila: número grande y zona, con el COLOR de
+    la zona (zona_de(): 1-4 QUINTA, 5-8 KINERET, 9-11 CHACRA). El color es el dato,
+    no adorno: la lista se recorre como la numeración del club.
+    'real' (la que entró) manda sobre 'pedida' cuando ya está reservada."""
+    n = str(real or "").strip() or str(pedida or "").strip()
+    cls_zona = {"KINERET": " kineret", "CHACRA": " chacra"}
+    if n.isdigit():
+        z = zona_de(n)
+        return (f'<span class="chapa{cls_zona.get(z, "")}" title="Cancha {esc(n)}'
+                f'{(" (" + z + ")") if z else ""}">'
+                f'<b>{int(n):02d}</b><span>{z}</span>'
+                f'<span class="vh">cancha {esc(n)} {z}</span></span>')
+    if n:                       # se pidió una ZONA, la cancha la elige el bot
+        z = n.upper()
+        return (f'<span class="chapa zona{cls_zona.get(z, "")}" title="Zona {esc(z)}">'
+                f'<b>{esc(z[:3])}</b><span class="vh">zona {esc(z)}</span></span>')
+    # sin cancha pedida: las tres superficies posibles, todavía sin asignar
+    return ('<span class="chapa cual" title="Cualquiera libre">'
+            '<i></i><i></i><i></i><span class="vh">cualquier cancha</span></span>')
+
+
 # ----------------------------------------------------------------------
 #  Estados de las reservas (programada / en_curso / reservada / fallada / vencida)
 # ----------------------------------------------------------------------
@@ -1219,7 +1280,7 @@ HOJA = ('<link rel="stylesheet" href="{{ url_for(\'static\', filename=\'estilo.c
 # PWA: manifest + iconos + color de barra (Android) y registro del service worker
 PWA_HEAD = """
 <link rel="manifest" href="/static/manifest.json">
-<meta name="theme-color" content="var(--navy)">
+<meta name="theme-color" content="#0b1b2e">
 <link rel="icon" type="image/png" href="/static/icon-192.png">
 <link rel="apple-touch-icon" href="/static/icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -2104,7 +2165,8 @@ def _menu_acciones(rid, items):
             f'<div class="menu-panel">{resto}</div></details>')
 
 
-def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False, kp=None):
+def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False, kp=None,
+                  mostrar_dia=True, solo_acciones=False):
     """HTML de UNA fila del listado de reservas (título, chip de estado, metadatos,
     notas y botones según estado/permisos). 'cp' = cambio de nombres programado,
     'kp' = cancelación programada. Los dos vienen aparte porque 'j' es el TRABAJO
@@ -2124,8 +2186,11 @@ def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False, kp=None):
                  "fallada": ("x-circle", "Falló"), "en_curso": ("refresh", "En curso"),
                  "vencida": ("clock", "Vencida"),
                  "cancelada": ("x-circle", "Cancelada")}.get(est, ("clock", est))
-    pill = f'<span class="pill {est}">{icon(pic)} {plab}</span>'
-    sede_ic, sede_lab = sede_visual(j.get("hora_desde"))
+    # El chip solo para lo que el resto de la fila NO dice: en programadas cinco chips
+    # iguales no informan, y en fallada/vencida el veredicto "No entró" ya lo dice en
+    # grande dos renglones más abajo.
+    pill = ("" if est in ("programada", "reservada", "fallada", "vencida")
+            else f'<span class="pill {est}">{icon(pic)} {plab}</span>')
 
     # cancha a mostrar: si ya está reservada, la que ENTRÓ (avisando si no es la pedida)
     cancha_disp = desc_cancha(j["cancha"])
@@ -2148,10 +2213,16 @@ def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False, kp=None):
         if creador:
             notas.append(f'<small class="hint">creada por {esc(creador)}</small>')
     else:
-        # data-t = epoch de la apertura -> el JS muestra "faltan 3 h 20 m" y lo actualiza solo
+        # El CUÁNTO FALTA se mudó a la columna .falta de la derecha: es la razón de ser
+        # del bot y acá era la línea más chica y más gris de la fila. Queda la hora exacta.
         notas.append(f'<small class="hint">{icon("clock")} se dispara {j["apertura_dt"].strftime("%d/%m %H:%M")}'
-                     f'<span class="cuenta" data-t="{int(j.get("apertura_epoch") or 0)}"></span>'
                      f'{(" · por " + str(esc(creador))) if creador else ""}</small>')
+    if est == "reservada":
+        # el marcador: la respuesta a "¿entró?" tiene que leerse desde la mesada
+        notas.insert(0, f'<div class="ganado"><span class="veredicto">Entró</span>'
+                        f'<span>en la cancha {cancha_disp}</span>{cancha_warn}</div>')
+    elif est in ("fallada", "vencida"):
+        notas.insert(0, '<div class="ganado"><span class="veredicto no">No entró</span></div>')
     if vigilando:
         notas.append(f'<div class="nota info">{icon("eye")} <b>Vigilando cancelaciones</b> · '
                      f'si se libera una cancha te la tomo y te aviso</div>')
@@ -2262,18 +2333,43 @@ def _fila_reserva(j, est, cp, creador, nom_por_id, vigilando=False, kp=None):
             botones = _menu_acciones(j["id"],
                                      [editar_btn, vig_btn, prog_btn, borrar])
 
+    # El tablero de la próxima en dispararse muestra ESA reserva en grande y necesita
+    # los mismos botones que tendría en la lista. Se los pide acá para que la lógica de
+    # permisos viva en un solo lugar: si no, la del tablero se quedaba SIN acciones
+    # (el mismo agujero que el jurado le encontró al prototipo "reloj").
+    if solo_acciones:
+        return botones
     acciones = f'<div class="acciones">{botones}</div>' if botones else ""
+    # El contador vivo va a la derecha de la fila: los de todas las filas forman una
+    # columna alineada por unidad que se escanea sola. data-t = epoch de la apertura,
+    # lo escribe el JS cada segundo (clase .cuenta-g = la versión grande, sin prefijo).
+    falta_html = ""
+    if est in ("programada", "en_curso") and j.get("apertura_epoch"):
+        falta_html = (f'<div class="falta"><small>faltan</small>'
+                      f'<b class="cuenta-g" data-t="{int(j["apertura_epoch"])}"></b></div>')
+    # La cancha vive en la chapa. El texto solo aclara lo que la chapa no puede decir
+    # sola: una zona pedida o "cualquiera", mientras todavía no se sabe cuál tocó.
+    pedida = str(j.get("cancha", "")).strip()
+    cancha_txt = ""
+    if est != "reservada" and not pedida.isdigit():
+        que = "cualquiera" if not pedida else f"zona {pedida.upper()}"
+        cancha_txt = f"<span>{icon('pin')} Cancha {que}</span>"
+    real_num = ""
+    if est == "reservada":
+        _r = cancha_reservada(j["id"], logtxt)
+        real_num = (_r.split("-")[0].lstrip("0") if "-" in _r else _r) if _r else ""
     return f"""<li class="reserva">
+          {chapa(pedida, real_num)}
           <div class="sp">
-            <div class="titulo"><span>{fmt_fecha(j['fecha']) if j['fecha'] else '(sin fecha)'} · {esc(j['hora_desde'])}–{esc(j['hora_hasta'])}</span>{pill}</div>
+            <div class="titulo"><span class="cuando">{('<span class="dia">' + (dia_corto(j['fecha']) if j['fecha'] else '(sin fecha)') + '</span>') if mostrar_dia else ''}{esc(j['hora_desde'])}–{esc(j['hora_hasta'])}</span>{pill}</div>
             <div class="meta">
-              <span>{icon(sede_ic)} {sede_lab}</span>
-              <span>{icon('pin')} {cancha_disp}{cancha_warn}</span>
+              {cancha_txt}
               <span>{icon('users')} {esc(j['reservador'])}, {esc(acomp_txt)}</span>
             </div>
             {notas_html}
             {acciones}
           </div>
+          {falta_html}
         </li>"""
 
 
@@ -2326,22 +2422,68 @@ def reservas():
     cancel_map = {r.get("id"): r["cancel_prog"] for r in reservas_raw if r.get("cancel_prog")}
     vigilar_map = {r.get("id"): r.get("vigilar") for r in reservas_raw}
     nom_por_id = {str(x.get("player_id")): x.get("nombre") for x in jugadores}
-    filas_prog, filas_conf = "", ""
-    for j in jobs:
-        est = get_estado(j["id"])
-        fila = _fila_reserva(j, est, cambio_map.get(j["id"]),
+    def _fila(j, est, mostrar_dia=True, solo_acciones=False):
+        return _fila_reserva(j, est, cambio_map.get(j["id"]),
                              creado_map.get(j["id"], ""), nom_por_id,
                              vigilando=bool(vigilar_map.get(j["id"])),
-                             kp=cancel_map.get(j["id"]))
+                             kp=cancel_map.get(j["id"]), mostrar_dia=mostrar_dia,
+                             solo_acciones=solo_acciones)
+
+    # La PRÓXIMA en dispararse sale de la lista y se va al tablero de arriba: es el
+    # único dato por el que existe el bot y antes era la línea más chica de la pantalla.
+    # Solo "programada": las que ya dispararon (fallada/vencida/en_curso) no cuentan.
+    prox_job = min((j for j in jobs
+                    if get_estado(j["id"]) == "programada" and j.get("apertura_epoch")
+                    and not j.get("problema")),
+                   key=lambda j: j["apertura_epoch"], default=None)
+
+    filas_prog, filas_conf, dia_actual = "", "", None
+    for j in jobs:
+        est = get_estado(j["id"])
         if est == "reservada":
-            filas_conf += fila
-        else:
-            filas_prog += fila
-    if not filas_prog:
+            filas_conf += _fila(j, est)
+            continue
+        if prox_job is not None and j["id"] == prox_job["id"]:
+            continue                       # ya se muestra en el tablero
+        # encabezado de día: el ritmo de la lista. Se repite el día solo al cambiar.
+        if j["fecha"] != dia_actual:
+            dia_actual = j["fecha"]
+            filas_prog += f'<li class="grupo">{dia_corto(j["fecha"])}</li>'
+        filas_prog += _fila(j, est, mostrar_dia=False)   # el día ya lo dice el grupo
+
+    tablero = ""
+    if prox_job is not None:
+        pj = prox_job
+        acomp = [x["nombre"] for x in pj.get("jugadores_full", [])] + \
+                [str(f) for f in pj.get("faltan_jugadores", [])]
+        quienes = ", ".join([str(pj["reservador"])] + acomp)
+        creador_pj = creado_map.get(pj["id"], "")
+        _b = _fila(pj, "programada", solo_acciones=True)
+        acc_pj = f'<div class="acciones">{_b}</div>' if _b else ""
+        tablero = f"""
+    <div class="tablero">
+      <p class="rotulo">La próxima en dispararse</p>
+      <div class="fila">
+        {chapa(pj.get("cancha", ""))}
+        <div class="datos">
+          <div class="cuando"><span class="dia">{dia_corto(pj["fecha"])}</span>{esc(pj["hora_desde"])}–{esc(pj["hora_hasta"])}</div>
+          <div class="quienes">{esc(quienes)}</div>
+        </div>
+      </div>
+      <div class="reloj"><span class="et">faltan</span>
+        <span class="cuenta-g" data-t="{int(pj["apertura_epoch"])}"></span></div>
+      <p class="pie">se dispara {pj["apertura_dt"].strftime("%d/%m %H:%M")}{(" · cargada por " + str(esc(creador_pj))) if creador_pj else ""}</p>
+      {plano_club(pj.get("cancha", ""), pj.get("hora_desde"))}
+      {acc_pj}
+    </div>"""
+
+    if not filas_prog and not tablero:
         filas_prog = (f'<li class="vacio">{icon("inbox")}<div>No tenés reservas programadas.<br>'
                       f'Cargá una arriba y el bot la toma sola a la apertura.</div></li>')
     if not filas_conf:
         filas_conf = f'<li class="vacio">{icon("check-circle")}<div>Todavía no hay turnos confirmados.</div></li>'
+    n_prog = sum(1 for j in jobs if get_estado(j["id"]) != "reservada")
+    n_conf = sum(1 for j in jobs if get_estado(j["id"]) == "reservada")
 
     # ---- valores del formulario (con o sin edición) ----
     manana = (hoy_ar() + datetime.timedelta(days=1)).isoformat()   # fecha ARG, no UTC
@@ -2607,22 +2749,29 @@ def reservas():
       w.style.display = (ca!=='' && SLOTS.indexOf(clubSel()+'|'+fechaSel()+'|'+ho+'|'+ca)>-1) ? 'block':'none';
     }
     // cuenta regresiva viva ("faltan 3 h 20 m") + auto-refresco de la lista
-    function txtFalta(seg){
-      if(seg <= 0) return ' · disparando…';
+    // 'desnudo' = solo el tiempo, sin " · faltan ": lo usa el contador GRANDE de la
+    // derecha y el del tablero, donde la palabra "faltan" ya está escrita al lado.
+    function txtFalta(seg, desnudo){
+      if(seg <= 0) return desnudo ? 'disparando…' : ' · disparando…';
       var d=Math.floor(seg/86400), h=Math.floor(seg%86400/3600), m=Math.floor(seg%3600/60), s=Math.floor(seg%60);
-      if(d>0) return ' · faltan '+d+' d '+h+' h';
-      if(h>0) return ' · faltan '+h+' h '+m+' m';
-      if(m>0) return ' · faltan '+m+' m '+s+' s';
-      return ' · faltan '+s+' s';
+      var t;
+      if(d>0) t = d+' d '+h+' h';
+      else if(h>0) t = h+' h '+m+' m';
+      else if(m>0) t = m+' m '+s+' s';
+      else t = s+' s';
+      return desnudo ? t : ' · faltan '+t;
     }
     function tick(){
       var prox = Infinity, ahora = Date.now()/1000;
-      document.querySelectorAll('.cuenta').forEach(function(el){
+      document.querySelectorAll('.cuenta, .cuenta-g').forEach(function(el){
         var t = parseInt(el.getAttribute('data-t')||'0', 10);
         if(!t) return;
-        var falta = t - ahora;
-        el.textContent = txtFalta(falta);
-        el.style.color = (falta > 0 && falta < 300) ? 'var(--error-fuerte)' : '';
+        var falta = t - ahora, grande = el.classList.contains('cuenta-g');
+        el.textContent = txtFalta(falta, grande);
+        // a menos de 5 min el contador se pone rojo: el grande por clase (el color sale
+        // del CSS segun donde este), el chico en linea como siempre
+        if(grande) el.classList.toggle('ya', falta > 0 && falta < 300);
+        else el.style.color = (falta > 0 && falta < 300) ? 'var(--error-fuerte)' : '';
         if(falta > -5 && falta < prox) prox = falta;
       });
       // si algo está por dispararse (o recién disparó), refrescar para ver el resultado
@@ -2679,9 +2828,8 @@ def reservas():
     # tus turnos habia que scrollear una pantalla entera. Ahora va plegado, y se abre solo
     # cuando estas editando/cambiando/programando (ahi el formulario ES la pantalla).
     abierto = " open" if (editando or modo_cambiar or modo_programar) else ""
-    cuerpo = f"""
-    {caja_avisos}
-    <details class="card plegable"{abierto}>
+    form_html = f"""
+    <details class="card plegable" id="nueva"{abierto}>
       <summary><h2>{icon(tit_ic)} {tit}</h2></summary>
       <form method="post" action="{url_for('reserva_crear')}">
         {hidden_edit}{hidden_cambiar}
@@ -2703,15 +2851,32 @@ def reservas():
         <div style="height:16px"></div>
         {bloque_botones}
       </form>
-    </details>
+    </details>"""
+
+    # Un turno GANADO es la respuesta a "¿entró?": va arriba de todo y en grande. Cuando
+    # no hay ninguno la sección no se dibuja: una tarjeta vacía que dice "todavía no hay"
+    # se comía la primera pantalla del celular y empujaba el tablero abajo del pliegue.
+    bloque_conf = "" if not n_conf else f"""
     <div class="card">
-      <h2>{icon('list')} Reservas programadas</h2>
-      <ul class="lista">{filas_prog}</ul>
-    </div>
+      <h2>{icon('check-circle')} Turnos ganados<span class="cuenta-sec">{n_conf}</span></h2>
+      <ul class="lista filas">{filas_conf}</ul>
+    </div>"""
+    nueva_link = (f'<a class="btn sec btn-sm" href="#nueva" onclick="abrirNueva()">'
+                  f'{icon("plus")} Nueva reserva</a>')
+    bloque_prog = f"""
     <div class="card">
-      <h2>{icon('check-circle')} Reservas confirmadas</h2>
-      <ul class="lista">{filas_conf}</ul>
-    </div>
+      <h2>{icon('list')} Reservas programadas<span class="cuenta-sec">{n_prog}</span>
+        <span style="margin-left:10px">{nueva_link}</span></h2>
+      <ul class="lista filas">{filas_prog}</ul>
+    </div>"""
+    # editando/cambiando/programando el formulario ES la pantalla: va primero.
+    cuerpo = f"""
+    {caja_avisos}
+    {form_html if abierto else ''}
+    {tablero}
+    {bloque_conf}
+    {bloque_prog}
+    {'' if abierto else form_html}
     <div style="text-align:center;margin:4px 0 18px">
       <a href="#" id="linkAvisos" style="display:none;font-size:.85rem;color:var(--texto-suave)"
          onclick="pedirAvisos(this);return false">{icon('bell')} Activar avisos también en este dispositivo</a>
@@ -2727,6 +2892,14 @@ def reservas():
     }})();
     </script>
     <div id="ov" class="overlay"><div class="spinner"></div><div>Procesando…</div></div>
+    <script>
+    // "+ Nueva reserva" está arriba, con la lista; el formulario vive abajo. El ancla
+    // sola scrollea pero deja el plegable cerrado, así que lo abrimos a mano.
+    function abrirNueva(){{
+      var d = document.getElementById('nueva');
+      if(d) d.open = true;
+    }}
+    </script>
     {script_block}"""
     return pagina("Reservas", "reservas", cuerpo)
 
@@ -4267,24 +4440,25 @@ def historial():
     filas = ""
     for r in regs[:100]:
         entro = r.get("estado") == "reservada"
-        chip = (f'<span class="pill reservada">{icon("check")} Entró</span>' if entro
-                else f'<span class="pill fallada">{icon("x")} No entró</span>')
         real = str(r.get("cancha_real", ""))
         real_num = real.split("-")[0].lstrip("0") if "-" in real else real
         ped = str(r.get("cancha_pedida", ""))
-        cancha = desc_cancha(real_num) if real_num else (desc_cancha(ped) if ped else "—")
         aviso = ""
         if entro and ped.isdigit() and real_num and real_num != ped:
-            aviso = f' <span class="nota warn">{icon("alert")} pedías la {esc(ped)}</span>'
-        sede_ic, sede = sede_visual(r.get("hora"))
+            aviso = f'<span class="nota warn">{icon("alert")} pedías la {esc(ped)}</span>'
         jugs = ", ".join(str(esc(x)) for x in (r.get("jugadores") or []))
-        filas += f"""<li class="reserva"><div class="sp">
-          <div class="titulo"><span>{fmt_fecha(r.get('fecha'))} · {esc(r.get('hora'))}</span>{chip}</div>
-          <div class="meta"><span>{icon(sede_ic)} {sede}</span>
-            <span>{icon('pin')} {cancha}{aviso}</span>
-            <span>{icon('users')} {esc(r.get('reservador'))}{(', ' + jugs) if jugs else ''}</span></div>
-          {f'<small class="hint">{esc(r.get("detalle"))}</small>' if r.get('detalle') else ''}
-        </div></li>"""
+        # la cancha va en la chapa (número + zona por color), el veredicto en grande:
+        # el historial se lee como una lista de resultados, no como un listado de datos
+        filas += f"""<li class="reserva">
+          {chapa(ped, real_num)}
+          <div class="sp">
+            <div class="titulo"><span class="cuando"><span class="dia">{dia_corto(r.get('fecha'))}</span>{esc(r.get('hora'))}</span></div>
+            <div class="ganado"><span class="veredicto{'' if entro else ' no'}">{'Entró' if entro else 'No entró'}</span>{aviso}</div>
+            <div class="meta">
+              <span>{icon('users')} {esc(r.get('reservador'))}{(', ' + jugs) if jugs else ''}</span></div>
+            {f'<small class="hint">{esc(r.get("detalle"))}</small>' if r.get('detalle') else ''}
+          </div>
+        </li>"""
     if not filas:
         filas = (f'<li class="vacio">{icon("inbox")}<div>Todavía no hay historial.<br>'
                  f'Se va llenando solo a medida que el bot dispara reservas.</div></li>')
@@ -4296,7 +4470,7 @@ def historial():
     </div>
     <div class="card">
       <h2>{icon('list')} Últimas reservas</h2>
-      <ul class="lista">{filas}</ul>
+      <ul class="lista filas">{filas}</ul>
     </div>"""
     return pagina("Historial", "historial", cuerpo)
 

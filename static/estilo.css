@@ -1,39 +1,64 @@
 /* ====== Reservame ésta! — sistema de diseño "cancha" ======
-   navy estructura · verde acción · lima acento. Mobile-first, ≥44px táctil. */
+   La app es la señalética del club: número de cancha, zona y marcador.
+   El color de la chapa ES la zona (QUINTA / KINERET / CHACRA), no adorno.
+   Mobile-first, ≥44px táctil. La paleta vive acá y en ningún otro lado. */
+
+/* Las tipografías van SERVIDAS POR NOSOTROS, no por Google. La app se abre en el
+   celular justo en el minuto previo al disparo: un CDN de por medio es una demora
+   y una dependencia de red que no hace falta. El service worker las cachea. */
+@font-face{font-family:Barlow;font-style:normal;font-weight:400;font-display:swap;
+  src:url(/static/fuentes/barlow-400.woff2) format("woff2")}
+@font-face{font-family:Barlow;font-style:normal;font-weight:500;font-display:swap;
+  src:url(/static/fuentes/barlow-500.woff2) format("woff2")}
+@font-face{font-family:Barlow;font-style:normal;font-weight:600;font-display:swap;
+  src:url(/static/fuentes/barlow-600.woff2) format("woff2")}
+@font-face{font-family:"Barlow Condensed";font-style:normal;font-weight:600;font-display:swap;
+  src:url(/static/fuentes/barlow-cond-600.woff2) format("woff2")}
+@font-face{font-family:"Barlow Condensed";font-style:normal;font-weight:700;font-display:swap;
+  src:url(/static/fuentes/barlow-cond-700.woff2) format("woff2")}
 
 :root {
-  --navy: #0e2038;
-  --navy-2: #16325c;
-  --verde: #12b76a;          /* acción principal */
-  --verde-h: #0fa561;
-  --verde-d: #0b8a50;
-  --lima: #c7e400;           /* acento (pestaña activa, foco, detalles) */
+  /* estructura */
+  --noche: #0b1b2e;          /* header, tablero de disparo, texto fuerte */
+  --noche-2: #122a45;
+  --navy: var(--noche);      /* nombre viejo: lo usan pantallas y estilos existentes */
+  --navy-2: var(--noche-2);
+
+  /* zonas del club: el color ES la zona (zona_de(): 1-4 / 5-8 / 9-11) */
+  --z-quinta: #1f6f9c;
+  --z-kineret: #0f7a63;
+  --z-chacra: #4f5f7e;
+
+  --verde: #0a7d49;          /* acción principal y "entró" (blanco encima pasa AA) */
+  --verde-h: #0c8f53;
+  --verde-d: #076338;
+  --lima: #c7e400;           /* LO INMINENTE: countdown del próximo disparo, foco, pestaña */
   --lima-d: #9bbb00;
 
-  --fondo: #eef1f6;
+  --fondo: #e6ebf1;          /* el vidrio del fondo de cancha */
   --carta: #ffffff;
-  --borde: #e3e7ee;
-  --borde-fuerte: #d3d9e2;
+  --borde: #dbe2ea;
+  --borde-fuerte: #c6d0dc;
 
-  --texto: #1c2330;
-  --texto-2: #5c6470;        /* AA sobre blanco */
-  --texto-3: #7a828e;
-  --texto-suave: #7a828e;    /* alias de --texto-3: se usaba sin existir y no pintaba nada */
+  --texto: #141c27;
+  --texto-2: #4d5766;        /* AA sobre blanco */
+  --texto-3: #6f7985;
+  --texto-suave: #6f7985;    /* alias de --texto-3: se usaba sin existir y no pintaba nada */
 
-  --ok: #157f3b;   --ok-bg: #e6f7ea;   --ok-bd: #b9e6c4;
-  --error: #cf3b3b; --error-bg: #fdecec; --error-bd: #f3c9c9;
-  --error-fuerte: #b42318;   /* rojo de TEXTO chico: mas contraste que --error */
-  --aviso: #9a6a12; --aviso-bg: #fdf3df; --aviso-bd: #f0dfae;
-  --info: #245bd0;  --info-bg: #e8f0ff;  --info-bd: #c5d8fb;
+  --ok: #0a7d49;   --ok-bg: #e6f5ec;   --ok-bd: #b3ddc5;
+  --error: #b42318; --error-bg: #fdecea; --error-bd: #f2c7c2;
+  --error-fuerte: #9a1c13;   /* rojo de TEXTO chico: mas contraste que --error */
+  --aviso: #8a5a06; --aviso-bg: #fdf3df; --aviso-bd: #f0dfae;
+  --info: #1f6f9c;  --info-bg: #e8f1f7;  --info-bd: #bcd6e6;
 
-  --radio: 10px;
-  --radio-card: 14px;
+  --radio: 8px;
+  --radio-card: 6px;
 }
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 body {
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  font-family: Barlow, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
   margin: 0; background: var(--fondo); color: var(--texto);
   font-size: 16px; line-height: 1.5;
   overflow-x: hidden; overflow-wrap: anywhere;
@@ -324,3 +349,187 @@ details.plegable > summary:hover::after { border-color: var(--verde); background
 .menu-panel .item > form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .menu-panel button, .menu-panel .btn { width: 100%; justify-content: flex-start; }
 .menu-panel .item + .item { border-top: 1px solid var(--borde); padding-top: 6px; }
+
+/* =========================================================================
+   Dirección "cancha" — componentes propios de este panel.
+   Van al final a propósito: lo de arriba sigue sirviendo a las otras pantallas
+   (jugadores, reservadores, encuesta, recurrentes, usuarios) sin tocarlas.
+   ========================================================================= */
+
+/* Títulos y navegación en condensada: es la letra de los carteles de cancha,
+   y al ser angosta deja entrar "22:00–23:00" y "1 d 6 h" sin apretar la fila. */
+h1, h2, h3, .cond { font-family: "Barlow Condensed", Barlow, system-ui, sans-serif; }
+.tnum { font-variant-numeric: tabular-nums; }
+
+h2 {
+  font-size: 1.22rem; font-weight: 600; letter-spacing: .2px; color: var(--noche);
+  padding-left: 0; border-left: 0;            /* el filete lima decorativo se va */
+  margin: 0 0 .6em; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+h2 .btn { white-space: nowrap; }              /* "+ Nueva reserva" no se parte en dos */
+h2 .ic { color: var(--texto-3); }
+h2 .cuenta-sec {                              /* el número al lado del título */
+  font-family: "Barlow Condensed"; font-size: 1.05rem; font-weight: 600;
+  color: var(--texto-3); font-variant-numeric: tabular-nums; margin-left: auto;
+}
+
+header nav a { font-family: "Barlow Condensed"; font-size: 1.02rem; font-weight: 600;
+  letter-spacing: .35px; border-radius: 3px; padding: 7px 11px; }
+header nav a.activo { background: var(--lima); color: var(--noche); font-weight: 700; }
+header b { font-family: "Barlow Condensed"; font-size: 1.3rem; letter-spacing: .3px; }
+
+.card { border-radius: var(--radio-card); }
+
+/* ---------- La chapa de cancha: la columna que ancla toda la app ----------
+   46px fijos a la izquierda de cada fila. El número es la cancha y el color es
+   la zona, así que la lista se escanea como la numeración del club. */
+.chapa {
+  --z: var(--z-quinta);
+  flex: none; width: 46px; height: 46px; border-radius: 5px; background: var(--z);
+  color: #fff; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; line-height: 1; font-family: "Barlow Condensed";
+  padding-top: 2px; text-decoration: none;
+}
+.chapa b { font-size: 1.34rem; font-weight: 700; letter-spacing: .5px;
+  font-variant-numeric: tabular-nums; }
+.chapa span { font-size: .47rem; font-weight: 600; letter-spacing: .7px;
+  margin-top: 2px; opacity: .88; }
+.chapa.kineret { --z: var(--z-kineret); }
+.chapa.chacra  { --z: var(--z-chacra); }
+/* Sin cancha asignada todavía: las tres superficies posibles, en franjas VERTICALES.
+   Horizontales se leían como el ícono de menú hamburguesa. */
+.chapa.cual {
+  background: transparent; border: 1.5px dashed var(--borde-fuerte);
+  flex-direction: row; gap: 3px; padding: 7px 7px; align-items: stretch;
+}
+.chapa.cual i { display: block; flex: 1; border-radius: 1px; opacity: .85; }
+.chapa.cual i:nth-child(1) { background: var(--z-quinta); }
+.chapa.cual i:nth-child(2) { background: var(--z-kineret); }
+.chapa.cual i:nth-child(3) { background: var(--z-chacra); }
+/* zona pedida sin número (la primera libre de esa zona) */
+.chapa.zona { background: var(--z); opacity: .82; }
+.chapa.zona b { font-size: .95rem; }
+
+/* ---------- Filas de reserva ----------
+   La lista es una plancha sola con filas separadas por una línea, no una pila
+   de tarjetas: la jerarquía sale de la agrupación y del tamaño, no de cajas. */
+ul.lista.filas { border-top: 1px solid var(--borde); }
+ul.lista.filas > li { padding: 11px 2px; border-bottom: 1px solid var(--borde);
+  align-items: flex-start; gap: 11px; flex-wrap: nowrap; }
+ul.lista.filas > li.vacio { border-bottom: 0; }
+
+/* encabezado de día: el ritmo de la lista */
+li.grupo {
+  display: block !important; font-family: "Barlow Condensed"; font-size: 1.02rem;
+  font-weight: 600; letter-spacing: .15px; color: var(--texto-3);
+  background: #f2f6f9; border-bottom: 1px solid var(--borde) !important;
+  padding: 5px 10px 4px !important; margin: 0 -2px; text-transform: none;
+}
+
+.reserva .cuando {
+  font-family: "Barlow Condensed"; font-size: 1.2rem; font-weight: 600;
+  color: var(--noche); line-height: 1.15; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.reserva .cuando .dia { color: var(--texto-3); font-weight: 600; margin-right: 4px; }
+.reserva .titulo { gap: 9px; align-items: baseline; }
+.reserva .meta { margin-top: 4px; }
+
+/* el contador de cuánto falta: a la derecha de la fila, alineado por unidad, para
+   que los contadores de todas las filas formen una columna que se escanea sola */
+.falta {
+  flex: none; text-align: right; font-family: "Barlow Condensed";
+  font-variant-numeric: tabular-nums; line-height: 1.1; color: var(--z-quinta);
+}
+.falta small { display: block; font-family: Barlow; font-size: .7rem; font-weight: 500;
+  color: var(--texto-3); letter-spacing: .2px; }
+.falta b { font-size: 1.18rem; font-weight: 700; }
+.cuenta-g.ya { color: var(--error); }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---------- Tablero de disparo: la próxima en dispararse ----------
+   Es la ÚNICA superficie oscura del cuerpo de la página. El dato que antes era
+   la línea más chica y más gris ahora es lo más grande de la pantalla. */
+.tablero {
+  background: var(--noche); color: #fff; border-radius: var(--radio-card);
+  padding: 14px 15px 13px; margin-bottom: 14px;
+}
+.tablero .rotulo { font-family: "Barlow Condensed"; font-size: .95rem; font-weight: 600;
+  letter-spacing: .5px; color: #93a9c1; margin: 0 0 9px; }
+.tablero .fila { display: flex; gap: 12px; align-items: flex-start; }
+.tablero .datos { flex: 1; min-width: 0; }
+.tablero .cuando { font-family: "Barlow Condensed"; font-size: 1.35rem; font-weight: 700;
+  color: #fff; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.tablero .cuando .dia { color: #93a9c1; margin-right: 5px; }
+.tablero .quienes { font-size: .88rem; color: #c3d2e2; margin-top: 3px;
+  overflow-wrap: anywhere; }
+.tablero .reloj { margin-top: 11px; display: flex; align-items: baseline; gap: 9px; }
+.tablero .reloj .et { font-size: .92rem; color: #93a9c1; }
+.tablero .reloj .cuenta-g {
+  font-family: "Barlow Condensed"; font-weight: 700; color: var(--lima);
+  font-size: clamp(2.2rem, 11vw, 3.2rem); line-height: 1;
+  font-variant-numeric: tabular-nums; letter-spacing: .5px;
+}
+.tablero .reloj .cuenta-g.ya { color: #ff8b84; }
+.tablero .pie { font-size: .85rem; color: #93a9c1; margin-top: 7px; }
+.tablero .acciones { margin-top: 11px; }
+.tablero .acciones button.sec, .tablero .acciones .btn.sec {
+  background: transparent; color: #dde6ef; border-color: #35506e; }
+.tablero .acciones button.sec:hover, .tablero .acciones .btn.sec:hover {
+  background: rgba(255,255,255,.08); }
+
+/* el plano del club: 11 canchas agrupadas por zona, la pedida encendida.
+   Cada cancha lleva el tinte de SU zona (vacías se leían como un skeleton de carga)
+   y la línea de la red al medio, que es lo que las vuelve canchas y no cuadraditos. */
+.plano { display: flex; gap: 13px; margin-top: 12px; flex-wrap: wrap; }
+.plano .zona { display: flex; flex-direction: column; gap: 4px; }
+.plano .canchas { display: flex; gap: 3px; }
+.plano i {
+  --z: var(--z-quinta);
+  width: 15px; height: 21px; border-radius: 2px; display: block; position: relative;
+  background: color-mix(in srgb, var(--z) 55%, #0b1b2e);
+  border: 1px solid color-mix(in srgb, var(--z) 75%, #0b1b2e);
+  opacity: .32;                 /* apagada = a esa hora no se puede jugar ahí */
+}
+.plano i.posible { opacity: 1; }
+.plano i::after { content: ""; position: absolute; left: 1px; right: 1px; top: 50%;
+  height: 1px; background: rgba(255,255,255,.34); }
+.plano .kineret i { --z: var(--z-kineret); }
+.plano .chacra i  { --z: var(--z-chacra); }
+.plano i.on { background: var(--lima); border-color: var(--lima); }
+.plano i.on::after { background: rgba(11,27,46,.45); }
+.plano .et { font-family: "Barlow Condensed"; font-size: .64rem; font-weight: 600;
+  letter-spacing: .8px; color: #7f95ae; }
+
+/* ---------- Turno ganado: el marcador ----------
+   La respuesta a "¿entró?" tiene que leerse desde la mesada, sin acercarse. */
+.ganado { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+.ganado .veredicto { font-family: "Barlow Condensed"; font-size: 1.55rem; font-weight: 700;
+  color: var(--verde); line-height: 1; letter-spacing: .3px; }
+.ganado .veredicto.no { color: var(--error); }
+
+/* ---------- Resumen del historial ---------- */
+.stat { border-radius: var(--radio-card); text-align: left; padding: 11px 13px; }
+.stat b { font-family: "Barlow Condensed"; font-size: 1.85rem; font-weight: 700;
+  color: var(--noche); font-variant-numeric: tabular-nums; }
+.stat small { font-size: .82rem; color: var(--texto-2); }
+
+/* ---------- Chips de estado: minúscula de oración, sin gritar ---------- */
+.pill { font-size: .78rem; letter-spacing: 0; text-transform: none; font-weight: 600;
+  padding: 2px 9px; border-radius: 4px; }
+
+:focus-visible { outline: 3px solid var(--lima); outline-offset: 2px; border-radius: 4px; }
+
+@media (max-width: 640px) {
+  /* Las 4 cifras del resumen van de a dos. El `.row > div{flex-basis:100%}` de arriba
+     está pensado para los campos del formulario y acá las apilaba de a una, así que el
+     resumen del historial se comía una pantalla entera del celular. */
+  .row > .stat { flex: 1 1 calc(50% - 6px); min-width: 0; }
+  .stat b { font-size: 1.6rem; }
+  .chapa { width: 42px; height: 42px; }
+  .chapa b { font-size: 1.22rem; }
+  ul.lista.filas > li { gap: 9px; }
+  .falta b { font-size: 1.06rem; }
+  .plano { gap: 10px; }
+}
