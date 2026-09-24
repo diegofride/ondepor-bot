@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="es-AR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Reservame ésta!</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --noche:#0B1C26;      /* fondo: la hora en que el bot trabaja */
+  --cal:#E9F0F2;        /* texto principal y la única superficie encendida */
+  --penumbra:#8CA4B0;   /* lo secundario y lo que está lejos en el tiempo */
+  --reflector:#FFB23D;  /* el bot trabajando AHORA */
+  --entro:#45D98F;      /* entró */
+  --noentro:#FF7B66;    /* no entró */
+  --linea:rgba(233,240,242,.12);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;max-width:100%}
+body{
+  background:var(--noche);
+  color:var(--cal);
+  font-family:'Archivo',system-ui,sans-serif;
+  font-variation-settings:'wdth' 100,'wght' 400;
+  font-size:15px;line-height:1.45;
+  -webkit-font-smoothing:antialiased;
+  padding-bottom:56px;
+}
+.num{font-variant-numeric:tabular-nums;font-feature-settings:'tnum' 1}
+.wrap{max-width:900px;margin:0 auto;padding:0 16px}
+a{color:inherit}
+:focus-visible{outline:2px solid var(--reflector);outline-offset:3px;border-radius:4px}
+.encendido :focus-visible{outline-color:#0B1C26}
+
+/* ---------- cabecera ---------- */
+header{border-bottom:1px solid var(--linea)}
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 0 10px}
+.marca{display:flex;align-items:center;gap:9px;font-size:17px;font-variation-settings:'wdth' 108,'wght' 700;letter-spacing:-.01em}
+.bola{width:11px;height:11px;border-radius:50%;background:var(--reflector);flex:none}
+.sesion{display:flex;align-items:center;gap:14px;font-size:13px;color:var(--penumbra)}
+.sesion a{text-decoration:none;border-bottom:1px solid var(--linea);padding-bottom:1px}
+.sesion a:hover{color:var(--cal)}
+.yo{color:var(--cal)}
+nav ul{list-style:none;display:flex;flex-wrap:wrap;gap:6px;margin:0;padding:0 0 12px}
+nav a{display:block;text-decoration:none;font-size:13.5px;padding:5px 11px;border-radius:999px;color:var(--penumbra)}
+nav a:hover{color:var(--cal)}
+nav a[aria-current]{background:var(--cal);color:var(--noche);font-variation-settings:'wdth' 100,'wght' 700}
+
+/* ---------- cinta de esta noche ---------- */
+.cinta{display:block;text-decoration:none;margin:14px 0 26px;padding:11px 14px;border:1px solid rgba(69,217,143,.4);border-radius:12px;background:rgba(69,217,143,.07);font-size:14px;color:var(--cal)}
+.cinta b{font-variation-settings:'wdth' 100,'wght' 700;color:var(--entro)}
+.cinta .gris{color:var(--penumbra)}
+
+/* ---------- títulos de sección ---------- */
+.seccion{margin:0 0 34px;scroll-margin-top:16px}
+.cab{display:flex;align-items:baseline;gap:10px;padding:0 0 12px;border-bottom:1px solid var(--linea);margin-bottom:6px}
+.cab h2{margin:0;font-size:15px;font-variation-settings:'wdth' 100,'wght' 700;letter-spacing:-.005em}
+.cab .cuenta{font-size:13px;color:var(--penumbra)}
+.cab .der{margin-left:auto}
+.btn{font:inherit;font-size:13.5px;font-variation-settings:'wdth' 100,'wght' 700;border:0;border-radius:9px;padding:7px 13px;background:var(--entro);color:#06231A;cursor:pointer}
+.btn:hover{filter:brightness(1.08)}
+.ghost{font:inherit;font-size:13px;border:1px solid var(--linea);background:none;color:var(--penumbra);border-radius:8px;padding:5px 11px;cursor:pointer}
+.ghost:hover{color:var(--cal);border-color:rgba(233,240,242,.32)}
+
+/* ---------- LA AUDACIA: el bloque encendido ---------- */
+.encendido{
+  position:relative;background:var(--cal);color:var(--noche);
+  border-radius:16px;padding:20px 18px 16px;margin:16px 0 14px;
+  box-shadow:0 0 0 1px rgba(255,178,61,.55), 0 18px 46px -14px rgba(255,178,61,.30);
+}
+.encendido::before{content:"";position:absolute;left:18px;right:18px;top:0;height:3px;border-radius:0 0 3px 3px;background:var(--reflector)}
+.rotulo{margin:0 0 10px;font-size:12.5px;color:#7A5200;font-variation-settings:'wdth' 100,'wght' 700}
+.turno-hero{margin:0;font-size:20px;line-height:1.2;font-variation-settings:'wdth' 104,'wght' 700;letter-spacing:-.015em}
+.cancha-hero{margin:2px 0 0;font-size:18px;font-variation-settings:'wdth' 104,'wght' 600;color:#12333F}
+.gente-hero{margin:6px 0 0;font-size:14px;color:#3D5A66}
+.gente-hero b{font-variation-settings:'wdth' 100,'wght' 700;color:#12333F}
+.reloj{margin:16px 0 0;padding-top:14px;border-top:1px solid rgba(11,28,38,.14)}
+.faltan{display:block;font-size:13px;color:#3D5A66;margin-bottom:-2px}
+.cd{display:flex;align-items:baseline;gap:2px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.cd .n{font-size:clamp(46px,15.5vw,68px);line-height:.98;font-variation-settings:'wdth' 118,'wght' 800}
+.cd .u{font-size:clamp(17px,5vw,24px);font-variation-settings:'wdth' 92,'wght' 600;color:#3D5A66;margin-right:10px}
+.cd .seg .n{font-size:clamp(28px,9vw,40px);font-variation-settings:'wdth' 112,'wght' 700;color:#3D5A66}
+.cd .seg .u{font-size:clamp(13px,3.6vw,17px);margin-right:0}
+.cd .seg{display:flex;align-items:baseline;gap:2px;transform:translateY(-2px)}
+.disparo{margin:12px 0 0;font-size:13.5px;color:#3D5A66}
+.disparo b{font-variation-settings:'wdth' 100,'wght' 700;color:var(--noche)}
+.acc-hero{display:flex;gap:8px;margin-top:14px}
+.acc-hero .ghost{border-color:rgba(11,28,38,.2);color:#12333F}
+.acc-hero .ghost:hover{border-color:rgba(11,28,38,.45)}
+
+/* ---------- filas en penumbra ---------- */
+ul.lista{list-style:none;margin:0;padding:0}
+.fila{display:grid;grid-template-columns:1fr auto;gap:4px 12px;padding:15px 0;border-bottom:1px solid var(--linea)}
+.fila:last-child{border-bottom:0}
+.fila .txt{min-width:0}
+.turno{margin:0;font-size:15px;font-variation-settings:'wdth' 100,'wght' 700;letter-spacing:-.01em}
+.cancha{margin:1px 0 0;font-size:14.5px}
+.gente{margin:4px 0 0;font-size:13px;color:var(--penumbra);overflow-wrap:break-word}
+.gente b{font-variation-settings:'wdth' 100,'wght' 600;color:#B9CCD4}
+.nota{margin:4px 0 0;font-size:12.5px;color:var(--penumbra)}
+.acc{display:flex;gap:7px;margin-top:9px}
+.q{grid-row:1 / span 4;grid-column:2;text-align:right;align-self:start;white-space:nowrap;font-variant-numeric:tabular-nums}
+.q .v{display:block;letter-spacing:-.02em}
+.q .v .n{font-size:22px;font-variation-settings:'wdth' 112,'wght' 700}
+.q .v .u{font-size:13px;font-variation-settings:'wdth' 92,'wght' 600;opacity:.72;margin-right:5px}
+.q .v .u:last-child{margin-right:0}
+/* la rampa: cuanto más lejos en el tiempo, menos luz */
+.medio .v{color:var(--cal)}
+.lejos .v{color:#7F97A3}
+.lejos .v .n{font-size:19px}
+.medio .cancha{color:var(--cal)}
+.lejos .turno{font-variation-settings:'wdth' 100,'wght' 600;color:#BACCD4}
+.lejos .cancha{color:#9DB2BC}
+
+/* ---------- vigilando ---------- */
+.vigila{border:1px solid rgba(255,178,61,.38);background:rgba(255,178,61,.06);border-radius:12px;padding:15px 14px;margin-top:12px}
+.vigila .turno{color:var(--cal)}
+.estado{margin:6px 0 0;font-size:13.5px;color:var(--reflector)}
+.latido{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--reflector);margin-right:7px;vertical-align:1px}
+.chip{display:inline-block;align-self:start;font-size:11.5px;padding:2px 9px;border-radius:999px;font-variation-settings:'wdth' 100,'wght' 700}
+.chip.no{background:rgba(255,123,102,.14);color:var(--noentro)}
+.chip.si{background:rgba(69,217,143,.14);color:var(--entro)}
+
+/* ---------- confirmada ---------- */
+.ganada{border-left:3px solid var(--entro);padding:2px 0 2px 14px;margin-top:14px}
+.ganada .resultado{margin:0;font-size:17px;font-variation-settings:'wdth' 104,'wght' 700;color:var(--entro);letter-spacing:-.01em}
+
+/* ---------- historial ---------- */
+.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--linea);border:1px solid var(--linea);border-radius:12px;overflow:hidden;margin:14px 0 22px}
+.stat{background:var(--noche);padding:13px 14px}
+.stat .n{display:block;font-size:26px;line-height:1.1;font-variation-settings:'wdth' 112,'wght' 700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.stat .d{font-size:12.5px;color:var(--penumbra)}
+.hfila{display:grid;grid-template-columns:1fr auto;gap:3px 10px;padding:12px 0;border-bottom:1px solid var(--linea)}
+.hfila:last-child{border-bottom:0}
+.hfila .turno{font-size:14.5px}
+.hfila .det{margin:2px 0 0;font-size:13px;color:var(--penumbra)}
+.hfila .det b{color:#B9CCD4;font-variation-settings:'wdth' 100,'wght' 600}
+.aviso{color:var(--reflector)}
+.pie{margin:26px 0 0;font-size:13px;color:var(--penumbra);text-align:center}
+.pie a{text-decoration:none;border-bottom:1px solid var(--linea)}
+
+@media (min-width:720px){
+  .wrap{padding:0 28px}
+  .encendido{display:grid;grid-template-columns:1fr auto;gap:0 34px;align-items:start;padding:24px 26px 20px}
+  .encendido .rotulo{grid-column:1 / -1}
+  .reloj{grid-column:2;grid-row:2 / span 5;margin:0;padding:0 0 0 30px;border-top:0;border-left:1px solid rgba(11,28,38,.14);text-align:right}
+  .cd{justify-content:flex-end}
+  .faltan{margin-bottom:2px}
+  .acc-hero{grid-column:1}
+  .stats{grid-template-columns:repeat(4,1fr)}
+  .fila{gap:4px 28px;padding:17px 0}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="top">
+      <div class="marca"><span class="bola" aria-hidden="true"></span>Reservame ésta!</div>
+      <div class="sesion">
+        <span class="yo">Diego</span>
+        <a href="#" title="Entrar con huella: activar este dispositivo">huella</a>
+        <a href="#">Salir</a>
+      </div>
+    </div>
+    <nav aria-label="Secciones">
+      <ul>
+        <li><a href="#" aria-current="page">Reservas</a></li>
+        <li><a href="#">Jugadores</a></li>
+        <li><a href="#">Reservadores</a></li>
+        <li><a href="#">Encuesta</a></li>
+        <li><a href="#">Recurrentes</a></li>
+        <li><a href="#">Historial</a></li>
+        <li><a href="#">Usuarios</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <a class="cinta" href="#confirmadas">
+    esta noche jugás <b class="num">22:00–23:00</b> <span class="gris">en la</span> <b class="num">04-QUINTA</b>
+  </a>
+
+  <!-- 1. PROGRAMADAS -->
+  <section class="seccion" aria-labelledby="h-prog">
+    <div class="cab">
+      <h2 id="h-prog">Reservas programadas</h2>
+      <span class="cuenta num">5</span>
+      <span class="der"><button class="btn" type="button">+ Nueva reserva</button></span>
+    </div>
+
+    <!-- la próxima: el único objeto encendido de la pantalla -->
+    <article class="encendido">
+      <p class="rotulo">la próxima en dispararse</p>
+      <p class="turno-hero num">jue 25/09 · 22:00–23:00</p>
+      <p class="cancha-hero">cancha 4 <span class="num">(QUINTA)</span></p>
+      <p class="gente-hero"><b>Diego Fride</b> + Pablo Minkowicz, Marcelo Sztryk</p>
+
+      <div class="reloj">
+        <span class="faltan">faltan</span>
+        <p class="cd" id="cd" aria-live="off">
+          <span class="n" id="cd-h">8</span><span class="u">h</span>
+          <span class="n" id="cd-m">00</span><span class="u">m</span>
+          <span class="seg"><span class="n" id="cd-s">00</span><span class="u">s</span></span>
+        </p>
+      </div>
+
+      <p class="disparo num">se dispara <b>24/09 22:01</b> · por Diego</p>
+      <div class="acc-hero">
+        <button class="ghost" type="button">Editar</button>
+        <button class="ghost" type="button" aria-label="Más acciones">…</button>
+      </div>
+    </article>
+
+    <ul class="lista">
+      <li class="fila medio">
+        <div class="txt">
+          <p class="turno num">vie 26/09 · 20:00–21:00</p>
+          <p class="cancha">cancha 2 <span class="num">(QUINTA)</span></p>
+          <p class="gente"><b>Diego Fride</b> + Gustavo Nudelman, Ariel Bercovich</p>
+          <p class="nota num">se dispara 25/09 20:01 · por Diego</p>
+          <div class="acc"><button class="ghost" type="button">Editar</button><button class="ghost" type="button" aria-label="Más acciones">…</button></div>
+        </div>
+        <div class="q medio"><span class="v"><span class="n">1</span><span class="u">d</span><span class="n">6</span><span class="u">h</span></span></div>
+      </li>
+
+      <li class="fila medio">
+        <div class="txt">
+          <p class="turno num">vie 26/09 · 21:00–22:00</p>
+          <p class="cancha">cancha Cualquiera</p>
+          <p class="gente"><b>Diego Fride</b> + Pablo Minkowicz, Marcelo Sztryk</p>
+          <p class="nota num">se dispara 25/09 21:01 · por Diego</p>
+          <div class="acc"><button class="ghost" type="button">Editar</button><button class="ghost" type="button" aria-label="Más acciones">…</button></div>
+        </div>
+        <div class="q medio"><span class="v"><span class="n">1</span><span class="u">d</span><span class="n">7</span><span class="u">h</span></span></div>
+      </li>
+
+      <li class="fila lejos">
+        <div class="txt">
+          <p class="turno num">lun 29/09 · 09:00–10:00</p>
+          <p class="cancha">cancha 3 <span class="num">(QUINTA)</span></p>
+          <p class="gente"><b>Diego Fride</b> + Pablo Minkowicz, Marcelo Sztryk</p>
+          <p class="nota num">se dispara 28/09 09:01 · por Diego · viene de una recurrente de los lunes</p>
+          <div class="acc"><button class="ghost" type="button">Editar</button><button class="ghost" type="button" aria-label="Más acciones">…</button></div>
+        </div>
+        <div class="q lejos"><span class="v"><span class="n">3</span><span class="u">d</span><span class="n">19</span><span class="u">h</span></span></div>
+      </li>
+
+      <li class="fila lejos">
+        <div class="txt">
+          <p class="turno num">mié 30/09 · 22:00–23:00</p>
+          <p class="cancha">cancha Cualquiera</p>
+          <p class="gente"><b>Pablo Minkowicz</b> + Diego Fride, Hernán Cayuela</p>
+          <p class="nota num">se dispara 29/09 22:01 · por Pablo</p>
+          <div class="acc"><button class="ghost" type="button">Editar</button><button class="ghost" type="button" aria-label="Más acciones">…</button></div>
+        </div>
+        <div class="q lejos"><span class="v"><span class="n">5</span><span class="u">d</span><span class="n">8</span><span class="u">h</span></span></div>
+      </li>
+    </ul>
+  </section>
+
+  <!-- 2. VIGILANDO -->
+  <section class="seccion" aria-labelledby="h-vig">
+    <div class="cab">
+      <h2 id="h-vig">Vigilando cancelaciones</h2>
+      <span class="cuenta num">1</span>
+    </div>
+    <article class="vigila">
+      <p class="turno num">vie 26/09 · 20:00–21:00 <span class="chip no">No entró</span></p>
+      <p class="gente"><b>Diego Fride</b> + Gustavo Nudelman, Ariel Bercovich</p>
+      <p class="nota">sin canchas libres a la apertura, vigilando cancelaciones</p>
+      <p class="estado"><span class="latido" aria-hidden="true"></span>si se libera una cancha te la tomo y te aviso</p>
+      <p class="nota num">último chequeo hace 3 min</p>
+      <div class="acc"><button class="ghost" type="button">Dejar de vigilar</button><button class="ghost" type="button" aria-label="Más acciones">…</button></div>
+    </article>
+  </section>
+
+  <!-- 3. CONFIRMADAS -->
+  <section class="seccion" id="confirmadas" aria-labelledby="h-conf">
+    <div class="cab">
+      <h2 id="h-conf">Reservas confirmadas</h2>
+      <span class="cuenta num">1</span>
+    </div>
+    <article class="ganada">
+      <p class="resultado">entró en la cancha <span class="num">04-QUINTA</span></p>
+      <p class="turno num" style="margin-top:4px">mié 24/09 · 22:00–23:00</p>
+      <p class="gente"><b>Diego Fride</b> + Pablo Minkowicz, Marcelo Sztryk</p>
+      <p class="nota num">confirmada a las 22:01:00 · creada por Diego</p>
+      <div class="acc"><button class="ghost" type="button">Cambiar</button><button class="ghost" type="button" aria-label="Más acciones">…</button></div>
+    </article>
+  </section>
+
+  <!-- 4. HISTORIAL -->
+  <section class="seccion" aria-labelledby="h-hist">
+    <div class="cab"><h2 id="h-hist">Historial</h2><span class="cuenta">Resumen</span></div>
+    <div class="stats">
+      <div class="stat"><span class="n">4</span><span class="d">reservas</span></div>
+      <div class="stat"><span class="n" style="color:var(--entro)">2</span><span class="d">entraron (50%)</span></div>
+      <div class="stat"><span class="n" style="color:var(--noentro)">2</span><span class="d">no entraron</span></div>
+      <div class="stat"><span class="n">50%</span><span class="d">en la cancha pedida</span></div>
+    </div>
+
+    <div class="cab"><h2>Últimas reservas</h2></div>
+    <ul class="lista">
+      <li class="hfila">
+        <div class="txt">
+          <p class="turno num">27/07 · 09:00</p>
+          <p class="det">cancha 3 <span class="num">(QUINTA)</span> · <b>prueba</b></p>
+        </div>
+        <span class="chip no">No entró</span>
+      </li>
+      <li class="hfila">
+        <div class="txt">
+          <p class="turno num">24/07 · 22:00</p>
+          <p class="det">cancha 6 <span class="num">(KINERET)</span></p>
+        </div>
+        <span class="chip si">Entró</span>
+      </li>
+      <li class="hfila">
+        <div class="txt">
+          <p class="turno num">24/07 · 16:00</p>
+          <p class="det">cancha 8 <span class="num">(KINERET)</span> · <span class="aviso">⚠ pedías la 4</span></p>
+        </div>
+        <span class="chip si">Entró</span>
+      </li>
+      <li class="hfila">
+        <div class="txt">
+          <p class="turno num">23/07 · 15:00</p>
+          <p class="det"><b>todas ocupadas</b></p>
+        </div>
+        <span class="chip no">No entró</span>
+      </li>
+    </ul>
+  </section>
+
+  <p class="pie"><a href="#">Activar avisos también en este dispositivo</a></p>
+</main>
+
+<script>
+// único movimiento de la pantalla: el countdown de la próxima, vivo, cada 1 s
+(function(){
+  var objetivo = Date.now() + (8*3600 + 0*60 + 7) * 1000;
+  var h = document.getElementById('cd-h'), m = document.getElementById('cd-m'), s = document.getElementById('cd-s');
+  function dd(n){ return n < 10 ? '0' + n : '' + n; }
+  function tic(){
+    var f = Math.max(0, Math.round((objetivo - Date.now())/1000));
+    h.textContent = Math.floor(f/3600);
+    m.textContent = dd(Math.floor(f%3600/60));
+    s.textContent = dd(f%60);
+  }
+  tic(); setInterval(tic, 1000);
+})();
+</script>
+</body>
+</html>

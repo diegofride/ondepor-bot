@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="es-AR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Reservame ésta! — tu semana</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   Reservame ésta! — dirección "semana"
+   La pantalla es la semana de pádel: un espinazo de días a la
+   izquierda, una canaleta de "cuánto falta" a la derecha, y el
+   turno flotando entre las dos. Los días libres también se dibujan.
+   ============================================================ */
+
+:root{
+  --noche:#0d1e36;      /* espinazo de la semana, texto fuerte */
+  --noche-2:#1b3556;    /* bloques y filetes sobre navy */
+  --cemento:#e8ecf3;    /* fondo de página */
+  --blanco:#ffffff;     /* superficie de los turnos */
+  --lima:#c7e400;       /* AHORA: hoy y la próxima en dispararse */
+  --entro:#0a7a4b;      /* entró */
+  --fallo:#b42318;      /* no entró */
+  --tinta:#17202e;
+  --gris:#5b6674;       /* AA sobre blanco y sobre cemento */
+  --linea:#dfe4ec;
+  --rail:56px;
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--cemento); color:var(--tinta);
+  font-family:"Archivo",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+  font-size:16px; line-height:1.45; overflow-wrap:anywhere;
+}
+.num{font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1}
+
+:focus-visible{
+  outline:2px solid var(--noche); outline-offset:2px;
+  box-shadow:0 0 0 5px rgba(199,228,0,.65); border-radius:6px;
+}
+
+/* ---------- barra ---------- */
+.barra{
+  background:var(--noche); color:#fff; position:sticky; top:0; z-index:40;
+  display:flex; align-items:center; gap:10px; padding:9px 14px; flex-wrap:wrap;
+}
+.marca{display:inline-flex; align-items:center; gap:8px; font-weight:700; font-size:1.02rem;
+  color:#fff; text-decoration:none; white-space:nowrap; letter-spacing:-.01em}
+.marca svg{width:22px; height:22px; flex:none}
+.barra nav{display:flex; gap:2px; overflow-x:auto; scrollbar-width:none; min-width:0; flex:1 1 100%; order:3;
+  margin:0 -14px; padding:2px 14px 0}
+.barra nav::-webkit-scrollbar{display:none}
+.barra nav a{
+  color:#fff; text-decoration:none; font-size:.9rem; padding:7px 10px 8px; white-space:nowrap;
+  opacity:.72; border-bottom:2px solid transparent; border-radius:6px 6px 0 0;
+}
+.barra nav a:hover{opacity:1}
+.barra nav a[aria-current]{opacity:1; font-weight:600; border-bottom-color:var(--lima)}
+.yo{margin-left:auto; display:flex; align-items:center; gap:10px; font-size:.86rem}
+.yo .quien{opacity:.75}
+.yo .salir{color:#fff; text-decoration:none; border:1px solid rgba(255,255,255,.34);
+  border-radius:999px; padding:5px 12px}
+.yo .salir:hover{background:rgba(255,255,255,.12)}
+
+/* ---------- contenedor ---------- */
+main{max-width:900px; margin:0 auto; padding:16px 14px 56px}
+section + section{margin-top:40px}
+
+/* ---------- cabecera de la semana ---------- */
+.cab{display:flex; align-items:baseline; flex-wrap:wrap; gap:4px 12px; margin:0 0 12px}
+.cab h1{margin:0; font-size:1.32rem; font-weight:700; letter-spacing:-.02em; color:var(--noche)}
+.cab .rango{font-size:.86rem; color:var(--gris); flex:1 1 auto}
+.b{
+  font:inherit; font-size:.86rem; font-weight:600; cursor:pointer;
+  background:#fff; color:var(--noche); border:1px solid var(--linea);
+  border-radius:8px; padding:8px 13px; min-height:36px;
+  display:inline-flex; align-items:center; gap:6px; text-decoration:none;
+}
+.b:hover{border-color:var(--noche)}
+.b.fuerte{background:var(--noche); color:#fff; border-color:var(--noche); min-height:44px; padding:11px 18px; font-size:.95rem}
+.b.fuerte:hover{background:var(--noche-2)}
+.b.chico{min-height:28px; padding:4px 9px; font-size:.79rem; font-weight:500; color:var(--gris); border-color:transparent; background:transparent}
+.b.chico:hover{color:var(--noche); border-color:var(--linea); background:#fff}
+
+/* ---------- formulario nueva reserva ---------- */
+#formnueva{background:#fff; border:1px solid var(--linea); border-radius:12px; padding:16px; margin-bottom:14px}
+#formnueva h2{margin:0 0 10px; font-size:1rem; color:var(--noche)}
+.campos{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px 12px}
+label{display:block; font-size:.76rem; font-weight:600; color:var(--gris); margin:0 0 4px}
+input,select{width:100%; min-height:42px; padding:9px 10px; font:inherit; font-size:.94rem;
+  border:1px solid #cdd4de; border-radius:8px; background:#fff; color:var(--tinta)}
+.chips{display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 0}
+.chipj{display:inline-flex; align-items:center; gap:6px; font-size:.84rem; padding:5px 10px;
+  border:1px solid #bfe3cf; background:#eefaf2; color:var(--entro); border-radius:999px; min-height:32px}
+.cuenta{font-weight:700; color:var(--noche)}
+.warn{margin:12px 0 0; font-size:.84rem; color:#8a5a00; background:#fdf5e3; border:1px solid #f0e0b5;
+  border-radius:8px; padding:9px 11px}
+.acciones-form{display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; align-items:center}
+.ayuda{font-size:.79rem; color:var(--gris); margin:10px 0 0; line-height:1.5}
+
+/* ============ LA SEMANA ============ */
+.semana{position:relative; margin:0}
+.dia{display:grid; grid-template-columns:var(--rail) minmax(0,1fr); align-items:stretch}
+.rail{
+  background:var(--noche); color:#fff; padding:12px 0 12px; text-align:center;
+  display:flex; flex-direction:column; align-items:center; gap:1px; line-height:1.05;
+}
+.dia:first-child .rail{border-radius:12px 0 0 0}
+.dia:last-child .rail{border-radius:0 0 0 12px}
+.rail .dow{font-size:.72rem; opacity:.62; letter-spacing:.01em}
+.rail .dnum{font-size:1.3rem; font-weight:700; font-variation-settings:"wdth" 108}
+.dia.hoy .rail .dnum{color:var(--lima)}
+.rail .hoy-lbl{font-size:.64rem; color:var(--lima); margin-top:2px}
+
+.dcont{background:var(--blanco); border:1px solid var(--linea); border-left:0; padding:0}
+.dia:first-child .dcont{border-radius:0 12px 0 0}
+.dia:last-child .dcont{border-radius:0 0 12px 0}
+.dia + .dia .dcont{border-top:0}
+
+/* --- un turno --- */
+.turno{
+  position:relative; display:grid; grid-template-columns:minmax(0,1fr) auto;
+  gap:1px 10px; padding:12px 13px 10px;
+}
+.turno + .turno{border-top:1px solid #eef1f6}
+.t-top{grid-column:1; display:flex; flex-wrap:wrap; align-items:center; gap:5px 8px}
+.hora{font-size:.98rem; font-weight:700; color:var(--noche); letter-spacing:-.01em}
+.cancha{font-size:.76rem; color:var(--noche); background:#eff3f8; border:1px solid #e0e6ef;
+  border-radius:999px; padding:2px 9px; white-space:nowrap}
+.cancha.libre-cualq{color:var(--gris)}
+.t-jug{grid-column:1; font-size:.82rem; color:var(--gris); margin-top:2px}
+.t-pie{grid-column:1; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between;
+  gap:4px 10px; margin-top:5px}
+.nota{font-size:.765rem; color:var(--gris)}
+.nota b{color:var(--noche); font-weight:600}
+.t-est{grid-column:2; grid-row:1 / span 3; text-align:right; align-self:start; padding-top:1px; white-space:nowrap}
+.t-est .lbl{display:block; font-size:.7rem; color:var(--gris); line-height:1.2}
+.t-est .val{display:block; font-size:.95rem; font-weight:700; color:var(--noche); font-variation-settings:"wdth" 104}
+.t-est .val.ok{color:var(--entro)}
+.t-est .val.no{color:var(--fallo)}
+.acc{display:flex; gap:2px; align-items:center}
+
+/* --- el turno que ganó --- */
+.turno.gano{box-shadow:inset 3px 0 0 var(--entro)}
+.turno.gano .cancha{background:#eefaf2; border-color:#bfe3cf; color:var(--entro)}
+
+/* --- el turno que está vigilando --- */
+.turno.vigila{box-shadow:inset 3px 0 0 var(--fallo)}
+.ojo{color:var(--noche); font-weight:600}
+
+/* --- LA PRÓXIMA: el único lugar ruidoso --- */
+.prox{display:block; padding:0}
+.prox .caja{
+  background:var(--noche); color:#fff; margin:0;
+  padding:12px 13px 11px; display:grid; grid-template-columns:minmax(0,1fr); gap:2px;
+}
+.prox .rotulo{color:var(--lima); font-size:.74rem; font-weight:600}
+.prox .reloj{text-align:right; margin:-2px 0 6px}
+.prox .reloj .lbl{display:block; font-size:.74rem; color:rgba(255,255,255,.64); line-height:1}
+.prox .reloj .val{
+  display:block; font-size:2.7rem; font-weight:700; line-height:1.02; color:#fff;
+  font-variation-settings:"wdth" 122; letter-spacing:-.015em;
+}
+.prox .hora{color:#fff}
+.prox .cancha{background:rgba(255,255,255,.08); border-color:rgba(255,255,255,.26); color:#fff}
+.prox .t-jug{color:rgba(255,255,255,.78)}
+.prox .nota{color:rgba(255,255,255,.66)}
+.prox .nota b{color:#fff}
+.prox .b.chico{color:rgba(255,255,255,.8)}
+.prox .b.chico:hover{color:var(--noche); background:var(--lima); border-color:var(--lima)}
+.prox .t-pie{margin-top:9px}
+
+/* --- día libre --- */
+.libre{display:flex; align-items:center; gap:10px; padding:9px 13px; min-height:46px}
+.libre .txt{font-size:.82rem; color:var(--gris); flex:1 1 auto;
+  border-top:1px dashed #d3dae4; padding-top:0; line-height:1}
+.libre .txt span{background:var(--blanco); padding-right:8px; position:relative; top:-.55em}
+
+/* ============ HISTORIAL ============ */
+h2.tit{margin:0 0 10px; font-size:1.05rem; font-weight:700; color:var(--noche); letter-spacing:-.015em}
+h3.sub{margin:22px 0 8px; font-size:.86rem; font-weight:600; color:var(--gris)}
+.resumen{display:grid; grid-template-columns:repeat(2,1fr); background:#fff;
+  border:1px solid var(--linea); border-radius:12px; overflow:hidden}
+.resumen div{padding:13px 14px; border-top:1px solid var(--linea); border-left:1px solid var(--linea)}
+.resumen div:nth-child(-n+2){border-top:0}
+.resumen div:nth-child(odd){border-left:0}
+.resumen b{display:block; font-size:1.55rem; font-weight:700; color:var(--noche); line-height:1.1;
+  font-variation-settings:"wdth" 106}
+.resumen .ok b{color:var(--entro)}
+.resumen .no b{color:var(--fallo)}
+.resumen small{font-size:.78rem; color:var(--gris)}
+
+.hist{background:#fff; border:1px solid var(--linea); border-radius:12px; overflow:hidden}
+.hfila{display:grid; grid-template-columns:minmax(0,1fr) auto; gap:2px 10px; padding:11px 14px}
+.hfila + .hfila{border-top:1px solid #eef1f6}
+.hfila .cuando{font-size:.92rem; font-weight:600; color:var(--noche)}
+.hfila .det{grid-column:1; font-size:.8rem; color:var(--gris); display:flex; flex-wrap:wrap; gap:4px 8px; align-items:center}
+.marca-est{grid-column:2; grid-row:1 / span 2; align-self:start; font-size:.8rem; font-weight:600; white-space:nowrap;
+  display:inline-flex; align-items:center; gap:6px}
+.marca-est::before{content:""; width:8px; height:8px; border-radius:50%; background:currentColor}
+.marca-est.ok{color:var(--entro)}
+.marca-est.no{color:var(--fallo)}
+.pedias{color:#8a5a00; background:#fdf5e3; border:1px solid #f0e0b5; border-radius:999px; padding:1px 8px; font-size:.75rem}
+
+/* ---------- menú "…" de fila ---------- */
+details.menu{position:static}
+details.menu > summary{list-style:none; cursor:pointer}
+details.menu > summary::-webkit-details-marker{display:none}
+details.menu[open] > .panel{
+  display:flex; flex-direction:column; gap:2px; position:absolute; right:10px; top:calc(100% - 6px);
+  z-index:20; min-width:196px; max-width:calc(100% - 20px);
+  background:#fff; border:1px solid #cdd4de; border-radius:10px; padding:6px;
+  box-shadow:0 12px 28px rgba(13,30,54,.18);
+}
+.panel{display:none}
+.panel button{font:inherit; font-size:.85rem; text-align:left; background:none; border:0; color:var(--tinta);
+  padding:8px 9px; border-radius:6px; cursor:pointer; min-height:36px}
+.panel button:hover{background:#f2f5f9}
+.panel button.rojo{color:var(--fallo)}
+
+/* ---------- el único movimiento orquestado: se dibuja el espinazo ---------- */
+.telon{position:absolute; left:0; top:0; bottom:0; width:var(--rail); background:var(--cemento);
+  transform-origin:bottom; animation:baja .6s cubic-bezier(.4,0,.2,1) forwards; pointer-events:none; z-index:2}
+@keyframes baja{from{transform:scaleY(1)} to{transform:scaleY(0)}}
+@media (prefers-reduced-motion:reduce){ .telon{display:none} }
+
+/* ---------- escritorio ---------- */
+@media (min-width:760px){
+  :root{--rail:74px}
+  .barra{padding:10px 20px}
+  .barra nav{flex:0 1 auto; order:0; margin:0 0 0 14px; padding:0}
+  main{padding:26px 20px 70px}
+  .cab h1{font-size:1.55rem}
+  .turno{grid-template-columns:auto minmax(0,1fr) auto; column-gap:16px; padding:13px 18px 11px}
+  .turno.prox{padding:0}
+  .t-top{grid-column:1; grid-row:1; align-self:baseline}
+  .t-jug{grid-column:2; grid-row:1; margin-top:0; align-self:baseline}
+  .t-pie{grid-column:1 / 3; grid-row:2}
+  .t-est{grid-column:3; grid-row:1 / span 2; min-width:96px}
+  .prox .caja{grid-template-columns:minmax(0,1fr) auto; column-gap:24px; padding:16px 18px 15px; margin:0}
+  .prox .rotulo{grid-column:1}
+  .prox .reloj{grid-column:2; grid-row:1 / span 4; align-self:center; margin:0}
+  .prox .reloj .val{font-size:3.4rem}
+  .prox .cuerpo{grid-column:1}
+  .resumen{grid-template-columns:repeat(4,1fr)}
+  .resumen div{border-top:0; border-left:1px solid var(--linea)}
+  .resumen div:first-child{border-left:0}
+  .libre{padding:11px 18px}
+  .hfila{grid-template-columns:auto minmax(0,1fr) auto; column-gap:16px; padding:12px 18px}
+  .hfila .det{grid-column:2; grid-row:1}
+  .marca-est{grid-column:3; grid-row:1; min-width:86px}
+}
+</style>
+</head>
+<body>
+
+<header class="barra">
+  <a class="marca" href="#reservas">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#c7e400"/><path d="M4.6 5.2c3.1 2.7 3.1 11 0 13.6M19.4 5.2c-3.1 2.7-3.1 11 0 13.6" stroke="#0d1e36" stroke-width="1.7" fill="none"/></svg>
+    Reservame ésta!</a>
+  <nav aria-label="Secciones">
+    <a href="#reservas" aria-current="page">Reservas</a>
+    <a href="#">Jugadores</a>
+    <a href="#">Reservadores</a>
+    <a href="#">Encuesta</a>
+    <a href="#">Recurrentes</a>
+    <a href="#historial">Historial</a>
+    <a href="#">Usuarios</a>
+  </nav>
+  <div class="yo"><span class="quien">Diego</span><a class="salir" href="#">Salir</a></div>
+</header>
+
+<main>
+
+<!-- ===================== LA SEMANA ===================== -->
+<section id="reservas">
+  <div class="cab">
+    <h1>Tu semana</h1>
+    <p class="rango num">del mié 24 al mar 30 de septiembre</p>
+    <button class="b" id="abrir" aria-expanded="false" aria-controls="formnueva">+ nueva reserva</button>
+  </div>
+
+  <div id="formnueva" hidden>
+    <h2>Nueva reserva</h2>
+    <div class="campos">
+      <div>
+        <label for="f-res">Reservador (jugador 1)</label>
+        <select id="f-res">
+          <option>Seleccioná el reservador…</option>
+          <option selected>Diego Fride</option>
+          <option>Pablo Minkowicz</option>
+        </select>
+      </div>
+      <div>
+        <label for="f-fec">Fecha del turno</label>
+        <input id="f-fec" type="date" value="2026-09-27">
+      </div>
+      <div>
+        <label for="f-hor">Hora (turnos de 1 h)</label>
+        <select id="f-hor">
+          <option>20:00</option><option>21:00</option><option selected>22:00</option><option>23:00</option>
+        </select>
+      </div>
+      <div>
+        <label for="f-can">Cancha</label>
+        <select id="f-can">
+          <optgroup label="Cancha específica">
+            <option>1 · QUINTA</option><option>2 · QUINTA</option><option>3 · QUINTA</option>
+            <option selected>4 · QUINTA</option><option>5 · KINERET</option><option>6 · KINERET</option>
+          </optgroup>
+          <optgroup label="Por zona (la primera libre de la zona)">
+            <option>QUINTA</option><option>KINERET</option><option>CHACRA</option>
+          </optgroup>
+          <optgroup label=" ">
+            <option>Cualquiera libre</option>
+          </optgroup>
+        </select>
+      </div>
+    </div>
+
+    <div style="margin-top:12px">
+      <label for="f-bus">Jugadores acompañantes (elegí 3) <span class="cuenta num">2/3</span></label>
+      <div class="chips">
+        <span class="chipj">Pablo Minkowicz ✕</span>
+        <span class="chipj">Marcelo Sztryk ✕</span>
+      </div>
+      <input id="f-bus" type="search" placeholder="Buscar jugador…" style="margin-top:8px">
+    </div>
+
+    <p class="warn"><b>Pablo Minkowicz</b> ya figura en otra reserva de ese día (como reservador o como jugador). OnDepor puede rechazarla.</p>
+
+    <div class="acciones-form">
+      <button class="b fuerte">Programar reserva</button>
+      <button class="b" style="min-height:44px">Reservar ahora</button>
+    </div>
+    <p class="ayuda"><b>Programar:</b> para turnos futuros; se dispara sola a la apertura (turno −24 h +1 min).<br>
+      <b>Reservar ahora:</b> para turnos del mismo día que ya están abiertos (reserva al instante).</p>
+  </div>
+
+  <div class="semana">
+    <div class="telon" aria-hidden="true"></div>
+
+    <!-- mié 24 — hoy, la que entró -->
+    <div class="dia hoy">
+      <div class="rail"><span class="dow">mié</span><span class="dnum num">24</span><span class="hoy-lbl">hoy</span></div>
+      <div class="dcont">
+        <div class="turno gano">
+          <div class="t-top">
+            <span class="hora num">22:00–23:00</span>
+            <span class="cancha">entró en la cancha 04-QUINTA</span>
+          </div>
+          <div class="t-jug">Diego Fride, Pablo Minkowicz, Marcelo Sztryk</div>
+          <div class="t-est"><span class="lbl">resultado</span><span class="val ok">entró</span></div>
+          <div class="t-pie">
+            <span class="nota num">confirmada a las 22:01:00 · creada por Diego</span>
+            <span class="acc">
+              <button class="b chico">Cambiar</button>
+              <details class="menu"><summary class="b chico" role="button" tabindex="0" aria-label="Más acciones">…</summary>
+                <div class="panel">
+                  <button>Programar cambio</button>
+                  <button>Cancelar después</button>
+                  <button class="rojo">Cancelar</button>
+                </div>
+              </details>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- jue 25 — LA PRÓXIMA -->
+    <div class="dia">
+      <div class="rail"><span class="dow">jue</span><span class="dnum num">25</span></div>
+      <div class="dcont">
+        <div class="turno prox">
+          <div class="caja">
+            <span class="rotulo">la próxima en dispararse</span>
+            <div class="reloj"><span class="lbl">faltan</span><span class="val num">8 h 0 m</span></div>
+            <div class="cuerpo">
+              <div class="t-top">
+                <span class="hora num">22:00–23:00</span>
+                <span class="cancha">cancha 4 (QUINTA)</span>
+              </div>
+              <div class="t-jug">Diego Fride, Pablo Minkowicz, Marcelo Sztryk</div>
+              <div class="t-pie">
+                <span class="nota num">se dispara 24/09 22:01 · por Diego</span>
+                <span class="acc">
+                  <button class="b chico">Editar</button>
+                  <details class="menu"><summary class="b chico" role="button" tabindex="0" aria-label="Más acciones">…</summary>
+                    <div class="panel">
+                      <button>Programar cambio</button>
+                      <button>Vigilar cancelaciones</button>
+                      <button class="rojo">Quitar de la lista</button>
+                    </div>
+                  </details>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- vie 26 — tres turnos -->
+    <div class="dia">
+      <div class="rail"><span class="dow">vie</span><span class="dnum num">26</span></div>
+      <div class="dcont">
+
+        <div class="turno">
+          <div class="t-top">
+            <span class="hora num">20:00–21:00</span>
+            <span class="cancha">cancha 2 (QUINTA)</span>
+          </div>
+          <div class="t-jug">Diego Fride, Gustavo Nudelman, Ariel Bercovich</div>
+          <div class="t-est"><span class="lbl">faltan</span><span class="val num">1 d 6 h</span></div>
+          <div class="t-pie">
+            <span class="nota num">se dispara 25/09 20:01 · por Diego</span>
+            <span class="acc">
+              <button class="b chico">Editar</button>
+              <details class="menu"><summary class="b chico" role="button" tabindex="0" aria-label="Más acciones">…</summary>
+                <div class="panel">
+                  <button>Programar cambio</button>
+                  <button>Vigilar cancelaciones</button>
+                  <button class="rojo">Quitar de la lista</button>
+                </div>
+              </details>
+            </span>
+          </div>
+        </div>
+
+        <div class="turno vigila">
+          <div class="t-top">
+            <span class="hora num">20:00–21:00</span>
+            <span class="cancha libre-cualq">Cualquiera</span>
+          </div>
+          <div class="t-jug"><span class="ojo">vigilando cancelaciones</span> · si se libera una cancha te la tomo y te aviso</div>
+          <div class="t-est"><span class="lbl">resultado</span><span class="val no">no entró</span></div>
+          <div class="t-pie">
+            <span class="nota num">sin canchas libres a la apertura · último chequeo hace 3 min</span>
+            <span class="acc">
+              <button class="b chico">Dejar de vigilar</button>
+              <details class="menu"><summary class="b chico" role="button" tabindex="0" aria-label="Más acciones">…</summary>
+                <div class="panel">
+                  <button>Editar</button>
+                  <button class="rojo">Quitar de la lista</button>
+                </div>
+              </details>
+            </span>
+          </div>
+        </div>
+
+        <div class="turno">
+          <div class="t-top">
+            <span class="hora num">21:00–22:00</span>
+            <span class="cancha libre-cualq">Cualquiera</span>
+          </div>
+          <div class="t-jug">Diego Fride, Pablo Minkowicz, Marcelo Sztryk</div>
+          <div class="t-est"><span class="lbl">faltan</span><span class="val num">1 d 7 h</span></div>
+          <div class="t-pie">
+            <span class="nota num">se dispara 25/09 21:01 · por Diego</span>
+            <span class="acc">
+              <button class="b chico">Editar</button>
+              <details class="menu"><summary class="b chico" role="button" tabindex="0" aria-label="Más acciones">…</summary>
+                <div class="panel">
+                  <button>Programar cambio</button>
+                  <button>Vigilar cancelaciones</button>
+                  <button class="rojo">Quitar de la lista</button>
+                </div>
+              </details>
+            </span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- sáb 27 libre -->
+    <div class="dia">
+      <div class="rail"><span class="dow">sáb</span><span class="dnum num">27</span></div>
+      <div class="dcont">
+        <div class="libre">
+          <span class="txt"><span>libre</span></span>
+          <button class="b chico cargar" data-fecha="2026-09-27">+ cargar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- dom 28 libre -->
+    <div class="dia">
+      <div class="rail"><span class="dow">dom</span><span class="dnum num">28</span></div>
+      <div class="dcont">
+        <div class="libre">
+          <span class="txt"><span>libre</span></span>
+          <button class="b chico cargar" data-fecha="2026-09-28">+ cargar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- lun 29 -->
+    <div class="dia">
+      <div class="rail"><span class="dow">lun</span><span class="dnum num">29</span></div>
+      <div class="dcont">
+        <div class="turno">
+          <div class="t-top">
+            <span class="hora num">09:00–10:00</span>
+            <span class="cancha">cancha 3 (QUINTA)</span>
+          </div>
+          <div class="t-jug">Diego Fride, Pablo Minkowicz, Marcelo Sztryk</div>
+          <div class="t-est"><span class="lbl">faltan</span><span class="val num">3 d 19 h</span></div>
+          <div class="t-pie">
+            <span class="nota num">se dispara 28/09 09:01 · por Diego · sale sola de la recurrente de los lunes</span>
+            <span class="acc">
+              <button class="b chico">Editar</button>
+              <details class="menu"><summary class="b chico" role="button" tabindex="0" aria-label="Más acciones">…</summary>
+                <div class="panel">
+                  <button>Programar cambio</button>
+                  <button>Ver la recurrente</button>
+                  <button class="rojo">Quitar de la lista</button>
+                </div>
+              </details>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- mar 30 -->
+    <div class="dia">
+      <div class="rail"><span class="dow">mar</span><span class="dnum num">30</span></div>
+      <div class="dcont">
+        <div class="turno">
+          <div class="t-top">
+            <span class="hora num">22:00–23:00</span>
+            <span class="cancha libre-cualq">Cualquiera</span>
+          </div>
+          <div class="t-jug">Pablo Minkowicz, Diego Fride, Hernán Cayuela</div>
+          <div class="t-est"><span class="lbl">faltan</span><span class="val num">5 d 8 h</span></div>
+          <div class="t-pie">
+            <span class="nota num">se dispara 29/09 22:01 · por Pablo</span>
+            <span class="acc">
+              <button class="b chico">Editar</button>
+              <details class="menu"><summary class="b chico" role="button" tabindex="0" aria-label="Más acciones">…</summary>
+                <div class="panel">
+                  <button>Programar cambio</button>
+                  <button>Vigilar cancelaciones</button>
+                  <button class="rojo">Quitar de la lista</button>
+                </div>
+              </details>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ===================== HISTORIAL ===================== -->
+<section id="historial">
+  <h2 class="tit">Historial</h2>
+  <h3 class="sub" style="margin-top:0">Resumen</h3>
+  <div class="resumen">
+    <div><b class="num">4</b><small>reservas</small></div>
+    <div class="ok"><b class="num">2</b><small>entraron (50%)</small></div>
+    <div class="no"><b class="num">2</b><small>no entraron</small></div>
+    <div><b class="num">50%</b><small>en la cancha pedida</small></div>
+  </div>
+
+  <h3 class="sub">Últimas reservas</h3>
+  <div class="hist">
+    <div class="hfila">
+      <span class="cuando num">27/07/2026 · 09:00</span>
+      <span class="marca-est no">No entró</span>
+      <span class="det"><span class="cancha">3 (QUINTA)</span> Diego Fride, Pablo Becker · prueba</span>
+    </div>
+    <div class="hfila">
+      <span class="cuando num">24/07/2026 · 22:00</span>
+      <span class="marca-est ok">Entró</span>
+      <span class="det"><span class="cancha">6 (KINERET)</span> Diego Fride, Pablo Becker</span>
+    </div>
+    <div class="hfila">
+      <span class="cuando num">24/07/2026 · 16:00</span>
+      <span class="marca-est ok">Entró</span>
+      <span class="det"><span class="cancha">8 (KINERET)</span> <span class="pedias">pedías la 4</span> Javier</span>
+    </div>
+    <div class="hfila">
+      <span class="cuando num">23/07/2026 · 15:00</span>
+      <span class="marca-est no">No entró</span>
+      <span class="det"><span class="cancha libre-cualq">Cualquiera</span> Diego Fride · todas ocupadas</span>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<script>
+(function(){
+  var form = document.getElementById('formnueva');
+  var btn  = document.getElementById('abrir');
+
+  function abrir(fecha){
+    form.hidden = false;
+    btn.setAttribute('aria-expanded','true');
+    if (fecha) document.getElementById('f-fec').value = fecha;
+    document.getElementById('f-res').focus();
+  }
+  btn.addEventListener('click', function(){
+    if (form.hidden) { abrir(null); }
+    else { form.hidden = true; btn.setAttribute('aria-expanded','false'); }
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('.cargar'), function(b){
+    b.addEventListener('click', function(){ abrir(b.dataset.fecha); });
+  });
+
+  // un solo menú "…" abierto por vez
+  var menus = document.querySelectorAll('details.menu');
+  Array.prototype.forEach.call(menus, function(d){
+    d.addEventListener('toggle', function(){
+      if (!d.open) return;
+      Array.prototype.forEach.call(menus, function(o){ if (o !== d) o.open = false; });
+    });
+  });
+  document.addEventListener('click', function(e){
+    Array.prototype.forEach.call(menus, function(d){
+      if (d.open && !d.contains(e.target)) d.open = false;
+    });
+  });
+})();
+</script>
+</body>
+</html>

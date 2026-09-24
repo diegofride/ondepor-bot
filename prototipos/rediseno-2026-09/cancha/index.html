@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="es-AR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Reservame ésta! — Reservas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+/* =========================================================================
+   Reservame ésta! — dirección "cancha"
+   La app es la señalética del club: número de cancha, zona, marcador.
+   Una sola superficie se dibuja como cancha de verdad: el tablero de disparo.
+   ========================================================================= */
+:root{
+  --noche:#0b1b2e;      /* estructura: header, tablero de disparo, texto fuerte */
+  --noche-2:#122a45;
+  --vidrio:#e6ebf1;     /* fondo de la app: el vidrio del fondo de cancha */
+  --pista:#1f6f9c;      /* superficie QUINTA + color de los datos de tiempo */
+  --verde:#0a7d49;      /* acción y "entró" (AA con texto blanco) */
+  --verde-cl:#12b76a;
+  --lima:#c7e400;       /* inminente: lo que está por pasar. foco y pestaña activa */
+  --fuera:#b42318;      /* "no entró" y countdown en rojo */
+  --ambar:#8a5a06;
+
+  --papel:#fff;
+  --tinta:#141c27;
+  --tinta-2:#4d5766;    /* AA sobre blanco */
+  --linea:#dbe2ea;
+
+  /* superficies por zona: el color ES la zona */
+  --z-quinta:#1f6f9c;
+  --z-kineret:#0f7a63;
+  --z-chacra:#4f5f7e;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--vidrio);color:var(--tinta);
+  font-family:Barlow,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+  font-size:16px;line-height:1.45;
+}
+.tab{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+h1,h2,h3{margin:0;font-family:"Barlow Condensed",Barlow,system-ui,sans-serif;font-weight:600;letter-spacing:.2px}
+a{color:inherit}
+:focus-visible{outline:3px solid var(--lima);outline-offset:2px;border-radius:4px}
+.noshow{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* ---------------- header / navegación ---------------- */
+header{background:var(--noche);color:#fff;padding:9px 12px 6px;position:sticky;top:0;z-index:40}
+.fila1{display:flex;align-items:center;gap:10px}
+.marca{font-family:"Barlow Condensed";font-size:1.32rem;font-weight:700;letter-spacing:.3px;
+  display:flex;align-items:center;gap:8px;white-space:nowrap}
+.pelota{width:17px;height:17px;border-radius:50%;background:var(--lima);flex:none;position:relative}
+.pelota::after{content:"";position:absolute;inset:2px 6px;border-radius:50%;
+  border:1.5px solid rgba(11,27,46,.55);border-top:0;border-bottom:0}
+.fila1 .sp{flex:1}
+.yo{font-size:.83rem;color:#a9bbd0;white-space:nowrap;display:flex;align-items:center;gap:13px}
+.yo a{color:#dde6ef;text-decoration:none;border-bottom:1px solid rgba(221,230,239,.35)}
+nav{display:flex;flex-wrap:wrap;gap:2px 3px;margin-top:6px}
+nav a{font-family:"Barlow Condensed";font-size:1rem;font-weight:500;letter-spacing:.35px;
+  text-decoration:none;color:#c2d0e0;padding:5px 10px 4px;border-radius:3px;line-height:1.2}
+nav a:hover{color:#fff;background:rgba(255,255,255,.09)}
+nav a[aria-current]{background:var(--lima);color:var(--noche);font-weight:700}
+
+/* ---------------- layout ---------------- */
+main{max-width:790px;margin:0 auto;padding:14px 12px 30px}
+section{margin-bottom:22px}
+.enc{display:flex;align-items:baseline;gap:10px;margin:0 2px 8px}
+.enc h2{font-size:1.16rem;color:var(--noche);text-transform:none}
+.enc .sp{flex:1}
+.enc .cuenta{font-family:"Barlow Condensed";font-size:1.05rem;font-weight:600;color:#6f7985;
+  font-variant-numeric:tabular-nums}
+.plancha{background:var(--papel);border:1px solid var(--linea);border-radius:6px;overflow:hidden}
+
+/* ---------------- chapa de cancha (la columna que ancla todo) ---------------- */
+.chapa{
+  --z:var(--z-quinta);
+  flex:none;width:46px;height:46px;border-radius:5px;background:var(--z);color:#fff;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1;
+  font-family:"Barlow Condensed";padding-top:2px;
+}
+.chapa b{font-size:1.32rem;font-weight:700;letter-spacing:.5px;font-variant-numeric:tabular-nums}
+.chapa span{font-size:.47rem;font-weight:600;letter-spacing:.7px;margin-top:2px;opacity:.86}
+.kineret{--z:var(--z-kineret)} .chacra{--z:var(--z-chacra)}
+/* "Cualquiera": las tres superficies posibles, todavía sin asignar */
+.chapa.cual{background:transparent;border:1.5px dashed #aab5c3;gap:3px;padding:8px 9px;justify-content:center}
+.chapa.cual i{display:block;height:5px;width:100%;border-radius:1px}
+.chapa.cual i:nth-child(1){background:var(--z-quinta)}
+.chapa.cual i:nth-child(2){background:var(--z-kineret)}
+.chapa.cual i:nth-child(3){background:var(--z-chacra)}
+
+/* ---------------- filas de reserva ---------------- */
+.grupo{font-family:"Barlow Condensed";font-size:1rem;font-weight:600;letter-spacing:.15px;
+  color:#69747f;background:#f4f7fa;border-bottom:1px solid var(--linea);padding:5px 12px 4px}
+.res{display:flex;gap:11px;padding:11px 12px;border-bottom:1px solid var(--linea);align-items:flex-start}
+.res:last-child{border-bottom:0}
+.res .cuerpo{flex:1;min-width:0}
+.l1{display:flex;align-items:center;gap:8px;flex-wrap:nowrap}
+.l1 .cuando,.l1 .cual-txt{align-self:baseline}
+.l1 .acc{margin-top:0;margin-left:2px;flex:none}
+.cuando{font-family:"Barlow Condensed";font-size:1.18rem;font-weight:600;color:var(--noche);
+  line-height:1.15;white-space:nowrap;font-variant-numeric:tabular-nums}
+.cuando .dia{color:var(--tinta-2);font-weight:500;margin-right:3px}
+.l1 .sp{flex:1}
+.cual-txt{font-size:.8rem;color:#67727f;white-space:nowrap}
+.quien{font-size:.86rem;color:var(--tinta-2);margin:2px 0 0;overflow-wrap:anywhere}
+.quien b{font-weight:600;color:var(--tinta)}
+.nota{font-size:.8rem;color:#67727f;margin-top:3px}
+.nota.warn{color:var(--ambar)}
+.nota.ok{color:#0a6b3f}
+
+/* countdown de fila: peso proporcional a la cercanía */
+.falta{font-family:"Barlow Condensed";font-weight:600;font-size:1.05rem;color:#6b7684;
+  white-space:nowrap;font-variant-numeric:tabular-nums;text-align:right}
+.falta.hoy{color:var(--pista)}
+.falta small{font-size:.76rem;font-weight:500;display:block;color:#6f7985;line-height:1.2}
+
+/* chips: sólo para lo que NO es el estado normal */
+.chip{font-size:.72rem;font-weight:600;padding:2px 8px 1px;border-radius:3px;white-space:nowrap;
+  display:inline-flex;align-items:center;gap:5px;line-height:1.5}
+.chip.ok{background:#e4f5ea;color:#0a6b3f}
+.chip.no{background:#fbeae8;color:var(--fuera)}
+.chip.mira{background:#fbf0d8;color:var(--ambar)}
+.chip::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+
+/* ---------------- botones ---------------- */
+.btn{font-family:Barlow;font-size:.88rem;font-weight:600;border-radius:5px;border:1px solid var(--linea);
+  background:#fff;color:var(--noche);padding:7px 12px;min-height:34px;cursor:pointer;
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;text-decoration:none}
+.btn:hover{background:#f2f5f9}
+.btn.pri{background:var(--verde);border-color:var(--verde);color:#fff;min-height:40px;padding:9px 15px}
+.btn.pri:hover{background:#09693d}
+.btn.chico{min-height:30px;padding:4px 9px;font-size:.82rem}
+.acc{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+details.menu{position:static}
+.acc{position:relative}
+.res .cuerpo{position:relative}
+.l1 .menu-p{top:auto;margin-top:4px}
+details.menu>summary{list-style:none;cursor:pointer}
+details.menu>summary::-webkit-details-marker{display:none}
+.menu-p{display:none;position:absolute;right:0;top:calc(100% + 5px);z-index:20;min-width:190px;
+  background:#fff;border:1px solid #c9d2dd;border-radius:6px;padding:6px;
+  flex-direction:column;gap:4px;box-shadow:0 12px 26px rgba(11,27,46,.16)}
+details.menu[open]>.menu-p{display:flex}
+.menu-p .btn{justify-content:flex-start;border-color:transparent;width:100%}
+.menu-p .btn.mal{color:var(--fuera)}
+
+/* ---------------- EL TABLERO DE DISPARO (la audacia, un solo lugar) ---------------- */
+.tablero{position:relative;background:var(--noche);color:#fff;padding:16px 14px 14px;overflow:hidden;
+  border-bottom:1px solid var(--linea)}
+/* plano del club: las 11 canchas en sus 3 zonas, con la pedida encendida */
+.plano{display:flex;gap:15px;margin-top:14px;position:relative}
+.zona{display:flex;flex-direction:column;gap:3px}
+.zona .canchas{display:flex;gap:3px}
+.zona i{display:block;width:15px;height:26px;border:1px solid rgba(255,255,255,.3);
+  border-radius:1px;position:relative}
+.zona i::after{content:"";position:absolute;left:0;right:0;top:50%;height:1px;
+  background:rgba(255,255,255,.3)}
+.zona i.on{background:var(--lima);border-color:var(--lima)}
+.zona i.on::after{background:rgba(11,27,46,.55)}
+.zona b{font-family:"Barlow Condensed";font-size:.62rem;font-weight:600;letter-spacing:.5px;
+  color:#7f97b0;line-height:1}
+.tab-cuerpo{position:relative;display:flex;gap:13px;align-items:flex-start}
+.tablero .chapa{width:58px;height:58px;border-radius:6px}
+.tablero .chapa b{font-size:1.72rem}
+.tablero .chapa span{font-size:.53rem}
+.tab-datos{flex:1;min-width:0}
+.tab-cuando{font-family:"Barlow Condensed";font-size:1.62rem;font-weight:700;line-height:1.05;
+  font-variant-numeric:tabular-nums;letter-spacing:.3px}
+.tab-cuando .dia{color:#9fb6cd;font-weight:500}
+.tab-cancha{font-size:.88rem;color:#b9cade;margin-top:3px;display:flex;gap:15px;flex-wrap:wrap}
+.tab-quien{font-size:.88rem;color:#8ea5bd;margin-top:2px}
+.reloj{margin-top:13px;position:relative;display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.rot{font-family:"Barlow Condensed";font-size:1rem;color:#8fa6bd;line-height:1;padding-bottom:9px}
+.cd{margin:0;font-family:"Barlow Condensed";font-weight:700;font-size:3.3rem;line-height:.86;
+  color:var(--lima);font-variant-numeric:tabular-nums;letter-spacing:.5px}
+.cd i{font-style:normal;font-size:.44em;font-weight:600;color:#93a9c0;padding:0 .18em 0 .04em}
+.cd.rojo{color:#ff7a68}
+.disp{margin:0 0 3px;font-size:.84rem;color:#a7bdd3;flex:1;min-width:180px;
+  font-variant-numeric:tabular-nums}
+.tablero .acc{margin-top:12px;position:relative}
+@media (min-width:700px){
+  .tablero{display:grid;grid-template-columns:1fr auto;column-gap:30px;align-items:start;
+    padding:20px 18px 18px}
+  .tab-cuerpo,.plano,.tablero .acc{grid-column:1}
+  .reloj{grid-column:2;grid-row:1 / span 3;margin-top:0;display:block;text-align:right;align-self:center}
+  .reloj .rot{padding:0 0 2px;display:block}
+  .reloj .cd{font-size:3.9rem}
+  .reloj .disp{margin:6px 0 0;min-width:0}
+  .tablero .acc{justify-content:flex-start}
+}
+.tablero .btn{background:transparent;color:#dde8f2;border-color:rgba(255,255,255,.32)}
+.tablero .btn:hover{background:rgba(255,255,255,.12)}
+.tablero .menu-p{background:var(--noche-2);border-color:rgba(255,255,255,.22)}
+.tablero .menu-p .btn{color:#dde8f2}
+.tablero .menu-p .btn.mal{color:#ff9384}
+
+/* el único momento orquestado: el tablero se enciende una vez al cargar */
+@keyframes encender{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.plano{animation:encender .55s .25s ease-out backwards}
+.cd{animation:encender .45s .1s ease-out backwards}
+@media (prefers-reduced-motion:reduce){ .plano,.cd{animation:none} }
+
+/* ---------------- vigilando ---------------- */
+.vigila{background:#fffaef;border-bottom:1px solid var(--linea)}
+.vigila .res{border-bottom:0}
+
+/* ---------------- nueva reserva (form plegado) ---------------- */
+.formcaja{border-bottom:1px solid var(--linea);background:#f8fafc;padding:14px 12px}
+.formcaja[hidden]{display:none}
+.campos{display:flex;flex-wrap:wrap;gap:10px 12px}
+.campo{flex:1 1 150px;min-width:0}
+.campo.ancho{flex-basis:100%}
+label{display:block;font-size:.76rem;font-weight:600;color:var(--tinta-2);margin-bottom:4px;
+  letter-spacing:.2px}
+label .cont{float:right;font-family:"Barlow Condensed";font-size:.86rem;color:#6f7985}
+input,select{width:100%;min-height:42px;padding:9px 10px;border:1px solid #c5cedb;border-radius:5px;
+  font-family:Barlow;font-size:.95rem;background:#fff;color:var(--tinta)}
+input:focus,select:focus{outline:3px solid var(--lima);outline-offset:1px;border-color:#8f9db0}
+.chips-jug{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+.chip-jug{display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px solid #c5cedb;
+  border-radius:4px;padding:5px 9px;font-size:.85rem;min-height:32px}
+.chip-jug b{font-weight:600}
+.ayuda{font-size:.81rem;color:var(--tinta-2);margin:10px 0 0;line-height:1.5}
+.ayuda b{color:var(--tinta)}
+
+/* ---------------- historial / marcador ---------------- */
+.marcador{display:flex;background:var(--papel);border:1px solid var(--linea);border-radius:6px;
+  overflow:hidden}
+.marcador div{flex:1;padding:11px 8px 9px;text-align:center;border-left:1px solid var(--linea)}
+.marcador div:first-child{border-left:0}
+.marcador b{display:block;font-family:"Barlow Condensed";font-size:1.85rem;font-weight:700;
+  line-height:1;color:var(--noche);font-variant-numeric:tabular-nums}
+.marcador small{font-size:.75rem;color:#67727f;line-height:1.25;display:block;margin-top:3px}
+.marcador .g b{color:var(--verde)} .marcador .p b{color:var(--fuera)}
+
+.pie{text-align:center;font-size:.83rem;color:#5c6673;margin-top:4px}
+.pie a{color:#4a6b8f}
+
+/* ---------------- celular ---------------- */
+@media (max-width:640px){
+  main{padding:12px 10px 26px}
+  .cuando{font-size:1.08rem}
+  .tab-cuando{font-size:1.38rem}
+  .cd{font-size:3rem}
+  .res{gap:9px;padding:10px 10px}
+  .chapa{width:42px;height:42px}
+  .chapa b{font-size:1.2rem}
+  .marcador{flex-wrap:wrap}
+  .marcador div{flex:1 1 50%;border-left:0}
+  .marcador div:nth-child(even){border-left:1px solid var(--linea)}
+  .marcador div:nth-child(n+3){border-top:1px solid var(--linea)}
+  .disp{min-width:100%}
+  .campo{flex-basis:100%}
+}
+@media (max-width:380px){ .l1{flex-wrap:wrap} }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="fila1">
+    <div class="marca"><span class="pelota" aria-hidden="true"></span>Reservame ésta!</div>
+    <span class="sp"></span>
+    <div class="yo"><span class="soy">Diego</span><a href="#huella">huella</a><a href="#salir">Salir</a></div>
+  </div>
+  <nav aria-label="Secciones del panel">
+    <a href="#" aria-current="page">Reservas</a>
+    <a href="#jugadores">Jugadores</a>
+    <a href="#reservadores">Reservadores</a>
+    <a href="#encuesta">Encuesta</a>
+    <a href="#recurrentes">Recurrentes</a>
+    <a href="#historial">Historial</a>
+    <a href="#usuarios">Usuarios</a>
+  </nav>
+</header>
+
+<main>
+
+  <!-- ================= CONFIRMADAS: el resultado, arriba ================= -->
+  <section aria-labelledby="h-conf">
+    <div class="enc"><h2 id="h-conf">Reservas confirmadas</h2><span class="cuenta">1</span><span class="sp"></span></div>
+    <div class="plancha">
+      <div class="grupo">hoy, mié 24/09</div>
+      <div class="res">
+        <div class="chapa" title="cancha 4 (QUINTA)"><b>04</b><span>QUINTA</span></div>
+        <div class="cuerpo">
+          <div class="l1">
+            <span class="cuando tab">22:00–23:00</span>
+            <span class="chip ok">Reservada</span><span class="sp"></span>
+          </div>
+          <p class="quien"><b>Diego Fride</b>, Pablo Minkowicz, Marcelo Sztryk</p>
+          <p class="nota ok tab">entró en la cancha 04-QUINTA</p>
+          <p class="nota tab">confirmada a las 22:01:00, creada por Diego</p>
+          <div class="acc">
+            <button class="btn chico">Cambiar</button>
+            <details class="menu"><summary class="btn chico" role="button" aria-label="más acciones">…</summary>
+              <div class="menu-p">
+                <button class="btn chico">Programar cambio</button>
+                <button class="btn chico">Cancelar después</button>
+                <button class="btn chico mal">Cancelar</button>
+              </div>
+            </details>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PROGRAMADAS ================= -->
+  <section aria-labelledby="h-prog">
+    <div class="enc">
+      <h2 id="h-prog">Reservas programadas</h2>
+      <span class="cuenta">5</span>
+      <span class="sp"></span>
+      <button class="btn pri" id="bNueva" aria-expanded="false" aria-controls="formNueva">+ Nueva reserva</button>
+    </div>
+
+    <div class="plancha">
+
+      <!-- form plegado: no gasta una tarjeta, vive adentro de la plancha -->
+      <div class="formcaja" id="formNueva" hidden>
+        <div class="campos">
+          <div class="campo ancho">
+            <label for="f-res">Reservador (jugador 1)</label>
+            <select id="f-res"><option>Seleccioná el reservador…</option><option selected>Diego Fride</option><option>Pablo Minkowicz</option></select>
+          </div>
+          <div class="campo"><label for="f-fec">Fecha del turno</label>
+            <input id="f-fec" type="date" value="2026-10-02"></div>
+          <div class="campo"><label for="f-hor">Hora (turnos de 1 h)</label>
+            <select id="f-hor"><option>20:00</option><option selected>22:00</option><option>23:00</option></select></div>
+          <div class="campo"><label for="f-can">Cancha</label>
+            <select id="f-can">
+              <optgroup label="Cancha específica">
+                <option>1 · QUINTA</option><option selected>4 · QUINTA</option>
+                <option>6 · KINERET</option><option>10 · CHACRA</option>
+              </optgroup>
+              <optgroup label="Por zona (la primera libre de la zona)">
+                <option>QUINTA</option><option>KINERET</option><option>CHACRA</option>
+              </optgroup>
+              <option>Cualquiera libre</option>
+            </select></div>
+          <div class="campo ancho">
+            <label for="f-bus">Jugadores acompañantes (elegí 3) <span class="cont tab">2/3</span></label>
+            <div class="chips-jug">
+              <span class="chip-jug"><b>Pablo Minkowicz</b> ×</span>
+              <span class="chip-jug"><b>Marcelo Sztryk</b> ×</span>
+            </div>
+            <input id="f-bus" type="search" placeholder="Buscar jugador…">
+          </div>
+        </div>
+        <div class="acc">
+          <button class="btn pri">Programar reserva</button>
+          <button class="btn">Reservar ahora</button>
+        </div>
+        <p class="ayuda"><b>Programar:</b> para turnos futuros; se dispara sola a la apertura (turno −24 h +1 min).<br>
+          <b>Reservar ahora:</b> para turnos del mismo día que ya están abiertos (reserva al instante).</p>
+      </div>
+
+      <!-- ======== TABLERO DE DISPARO: la próxima ======== -->
+      <div class="grupo">la próxima en dispararse</div>
+      <article class="tablero">
+        <div class="tab-cuerpo">
+          <div class="chapa" title="cancha 4 (QUINTA)"><b>04</b><span>QUINTA</span></div>
+          <div class="tab-datos">
+            <p class="tab-cuando tab" style="margin:0"><span class="dia">jue 25/09</span> 22:00–23:00</p>
+            <p class="tab-cancha" style="margin:0"><span>Noche</span><span>cancha 4 (QUINTA)</span></p>
+            <p class="tab-quien" style="margin:0">Diego Fride, Pablo Minkowicz, Marcelo Sztryk</p>
+          </div>
+        </div>
+        <div class="reloj">
+          <span class="rot">faltan</span>
+          <p class="cd tab" data-faltan="28800" aria-live="off">8<i>h</i>0<i>m</i></p>
+          <p class="disp tab">se dispara 24/09 22:01 · por Diego</p>
+        </div>
+        <div class="plano" role="img" aria-label="plano del club: pedís la cancha 4 de QUINTA, de 11 canchas en 3 zonas">
+          <div class="zona"><div class="canchas"><i></i><i></i><i></i><i class="on"></i></div><b>QUINTA</b></div>
+          <div class="zona"><div class="canchas"><i></i><i></i><i></i><i></i></div><b>KINERET</b></div>
+          <div class="zona"><div class="canchas"><i></i><i></i><i></i></div><b>CHACRA</b></div>
+        </div>
+        <div class="acc">
+          <button class="btn chico">Editar</button>
+          <details class="menu"><summary class="btn chico" role="button" aria-label="más acciones">…</summary>
+            <div class="menu-p">
+              <button class="btn chico">Programar cambio</button>
+              <button class="btn chico">Vigilar cancelaciones</button>
+              <button class="btn chico mal">Quitar de la lista</button>
+            </div>
+          </details>
+        </div>
+      </article>
+
+      <!-- ======== no entró y está vigilando ======== -->
+      <div class="vigila">
+        <div class="grupo">no entró</div>
+        <div class="res">
+          <div class="chapa cual" title="cancha Cualquiera" aria-label="cancha Cualquiera"><i></i><i></i><i></i></div>
+          <div class="cuerpo">
+            <div class="l1">
+              <span class="cuando tab"><span class="dia">vie 26/09</span>20:00–21:00</span>
+              <span class="chip mira">Vigilando</span><span class="sp"></span>
+            </div>
+            <p class="quien"><b>Diego Fride</b>, Pablo Minkowicz, Marcelo Sztryk</p>
+            <p class="nota warn">sin canchas libres a la apertura, vigilando cancelaciones</p>
+            <p class="nota">si se libera una cancha te la tomo y te aviso</p>
+            <p class="nota">último chequeo hace 3 min</p>
+            <div class="acc">
+              <button class="btn chico">Dejar de vigilar</button>
+              <details class="menu"><summary class="btn chico" role="button" aria-label="más acciones">…</summary>
+                <div class="menu-p">
+                  <button class="btn chico">Editar</button>
+                  <button class="btn chico mal">Quitar de la lista</button>
+                </div>
+              </details>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ======== el resto, por día ======== -->
+      <div class="grupo">vie 26/09</div>
+
+      <div class="res">
+        <div class="chapa" title="cancha 2 (QUINTA)"><b>02</b><span>QUINTA</span></div>
+        <div class="cuerpo">
+          <div class="l1">
+            <span class="cuando tab">20:00–21:00</span>
+            <span class="sp"></span>
+            <span class="falta tab" data-faltan="108000"><small>faltan</small>1 d 6 h</span>
+            <details class="menu acc"><summary class="btn chico" role="button" aria-label="acciones de la reserva">…</summary><div class="menu-p"><button class="btn chico">Editar</button><button class="btn chico">Programar cambio</button><button class="btn chico">Vigilar cancelaciones</button><button class="btn chico mal">Quitar de la lista</button></div></details>
+          </div>
+          <p class="quien"><b>Diego Fride</b>, Gustavo Nudelman, Ariel Bercovich</p>
+          <p class="nota tab">se dispara 25/09 20:01 · por Diego</p>
+        </div>
+      </div>
+
+      <div class="res">
+        <div class="chapa cual" title="cancha Cualquiera" aria-label="cancha Cualquiera"><i></i><i></i><i></i></div>
+        <div class="cuerpo">
+          <div class="l1">
+            <span class="cuando tab">21:00–22:00</span>
+            <span class="cual-txt">Cualquiera</span>
+            <span class="sp"></span>
+            <span class="falta tab" data-faltan="111600"><small>faltan</small>1 d 7 h</span>
+            <details class="menu acc"><summary class="btn chico" role="button" aria-label="acciones de la reserva">…</summary><div class="menu-p"><button class="btn chico">Editar</button><button class="btn chico">Programar cambio</button><button class="btn chico">Vigilar cancelaciones</button><button class="btn chico mal">Quitar de la lista</button></div></details>
+          </div>
+          <p class="quien"><b>Diego Fride</b>, Pablo Minkowicz, Marcelo Sztryk</p>
+          <p class="nota tab">se dispara 25/09 21:01 · por Diego</p>
+        </div>
+      </div>
+
+      <div class="grupo">lun 29/09</div>
+
+      <div class="res">
+        <div class="chapa" title="cancha 3 (QUINTA)"><b>03</b><span>QUINTA</span></div>
+        <div class="cuerpo">
+          <div class="l1">
+            <span class="cuando tab">09:00–10:00</span>
+            <span class="sp"></span>
+            <span class="falta tab" data-faltan="327600"><small>faltan</small>3 d 19 h</span>
+            <details class="menu acc"><summary class="btn chico" role="button" aria-label="acciones de la reserva">…</summary><div class="menu-p"><button class="btn chico">Editar</button><button class="btn chico">Programar cambio</button><button class="btn chico">Vigilar cancelaciones</button><button class="btn chico mal">Quitar de la lista</button></div></details>
+          </div>
+          <p class="quien"><b>Diego Fride</b>, Pablo Minkowicz, Marcelo Sztryk</p>
+          <p class="nota tab">se dispara 28/09 09:01 · por Diego</p>
+          <p class="nota">viene de una recurrente de los lunes</p>
+        </div>
+      </div>
+
+      <div class="grupo">mié 30/09</div>
+
+      <div class="res">
+        <div class="chapa cual" title="cancha Cualquiera" aria-label="cancha Cualquiera"><i></i><i></i><i></i></div>
+        <div class="cuerpo">
+          <div class="l1">
+            <span class="cuando tab">22:00–23:00</span>
+            <span class="cual-txt">Cualquiera</span>
+            <span class="sp"></span>
+            <span class="falta tab" data-faltan="460800"><small>faltan</small>5 d 8 h</span>
+            <details class="menu acc"><summary class="btn chico" role="button" aria-label="acciones de la reserva">…</summary><div class="menu-p"><button class="btn chico">Editar</button><button class="btn chico">Programar cambio</button><button class="btn chico">Vigilar cancelaciones</button><button class="btn chico mal">Quitar de la lista</button></div></details>
+          </div>
+          <p class="quien"><b>Pablo Minkowicz</b>, Diego Fride, Hernán Cayuela</p>
+          <p class="nota tab">se dispara 29/09 22:01 · por Pablo</p>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ================= HISTORIAL ================= -->
+  <section id="historial" aria-labelledby="h-hist">
+    <div class="enc"><h2 id="h-hist">Historial</h2><span class="sp"></span>
+      <a class="btn chico" href="#historial">Ver todo</a></div>
+
+    <div class="marcador" style="margin-bottom:10px">
+      <div><b class="tab">4</b><small>reservas</small></div>
+      <div class="g"><b class="tab">2</b><small>entraron (50%)</small></div>
+      <div class="p"><b class="tab">2</b><small>no entraron</small></div>
+      <div><b class="tab">50%</b><small>en la cancha pedida</small></div>
+    </div>
+
+    <div class="plancha">
+      <div class="grupo">últimas reservas</div>
+
+      <div class="res">
+        <div class="chapa" title="cancha 3 (QUINTA)"><b>03</b><span>QUINTA</span></div>
+        <div class="cuerpo">
+          <div class="l1">
+            <span class="cuando tab"><span class="dia">27/07</span>09:00</span>
+            <span class="chip no">No entró</span><span class="sp"></span>
+          </div>
+          <p class="quien">Diego Fride, Pablo Becker</p>
+          <p class="nota">prueba</p>
+        </div>
+      </div>
+
+      <div class="res">
+        <div class="chapa kineret" title="cancha 6 (KINERET)"><b>06</b><span>KINERET</span></div>
+        <div class="cuerpo">
+          <div class="l1">
+            <span class="cuando tab"><span class="dia">24/07</span>22:00</span>
+            <span class="chip ok">Entró</span><span class="sp"></span>
+          </div>
+          <p class="quien">Diego Fride, Pablo Becker</p>
+        </div>
+      </div>
+
+      <div class="res">
+        <div class="chapa kineret" title="cancha 8 (KINERET)"><b>08</b><span>KINERET</span></div>
+        <div class="cuerpo">
+          <div class="l1">
+            <span class="cuando tab"><span class="dia">24/07</span>16:00</span>
+            <span class="chip ok">Entró</span><span class="sp"></span>
+          </div>
+          <p class="quien">Javier</p>
+          <p class="nota warn">⚠ pedías la 4</p>
+        </div>
+      </div>
+
+      <div class="res">
+        <div class="chapa cual" title="cancha Cualquiera" aria-label="cancha Cualquiera"><i></i><i></i><i></i></div>
+        <div class="cuerpo">
+          <div class="l1">
+            <span class="cuando tab"><span class="dia">23/07</span>15:00</span>
+            <span class="chip no">No entró</span><span class="sp"></span>
+          </div>
+          <p class="quien">Diego Fride</p>
+          <p class="nota">todas ocupadas</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <p class="pie"><a href="#avisos">Activar avisos también en este dispositivo</a></p>
+</main>
+
+<script>
+// ---- countdown vivo, con el formato exacto de Diego ----
+(function(){
+  var t0 = Date.now();
+  var nodos = [].slice.call(document.querySelectorAll('[data-faltan]')).map(function(n){
+    return {n:n, fin: t0 + (parseInt(n.dataset.faltan,10)+59)*1000, big: n.classList.contains('cd')};
+  });
+  function fmt(s, big){
+    if(s<=0) return big ? 'disparando…' : 'disparando…';
+    var d=Math.floor(s/86400), h=Math.floor(s%86400/3600), m=Math.floor(s%3600/60), sg=Math.floor(s%60);
+    var u = big ? function(a,b){return a+'<i>'+b+'</i>';} : function(a,b){return a+' '+b+(b==='d'||b==='h'||b==='m'?'':'');};
+    if(d>0) return big ? u(d,'d')+u(h,'h') : d+' d '+h+' h';
+    if(h>0) return big ? u(h,'h')+u(m,'m') : h+' h '+m+' m';
+    if(m>0) return big ? u(m,'m')+u(sg,'s') : m+' m '+sg+' s';
+    return big ? u(sg,'s') : sg+' s';
+  }
+  function tick(){
+    var ahora = Date.now();
+    nodos.forEach(function(o){
+      var s = Math.round((o.fin - ahora)/1000);
+      if(o.big){
+        o.n.innerHTML = fmt(s,true);
+        o.n.classList.toggle('rojo', s < 300);
+      }else{
+        var chico = o.n.querySelector('small');
+        o.n.innerHTML = (chico?chico.outerHTML:'') + fmt(s,false);
+        o.n.classList.toggle('hoy', s < 86400);
+      }
+    });
+  }
+  tick(); setInterval(tick, 1000);
+})();
+// ---- abrir el formulario de nueva reserva ----
+(function(){
+  var b=document.getElementById('bNueva'), f=document.getElementById('formNueva');
+  b.addEventListener('click',function(){
+    var ab=f.hasAttribute('hidden');
+    if(ab){f.removeAttribute('hidden');}else{f.setAttribute('hidden','');}
+    b.setAttribute('aria-expanded', ab?'true':'false');
+    if(ab) f.querySelector('select').focus();
+  });
+})();
+// ---- un solo menú "…" abierto por vez ----
+document.addEventListener('click',function(e){
+  document.querySelectorAll('details.menu[open]').forEach(function(d){
+    if(!d.contains(e.target)) d.removeAttribute('open');
+  });
+});
+</script>
+</body>
+</html>
