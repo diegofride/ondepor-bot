@@ -661,9 +661,11 @@ def _al_historial(job, est, cancha_real="", detalle="", creador=""):
     }
     with rb._io_lock:
         h = rb.leer_json("historial.json", {"historial": []})
-        lista = h.get("historial", [])
-        if any(x.get("id") == reg["id"] and x.get("fecha") == reg["fecha"] for x in lista):
-            return                        # ya estaba registrada
+        # si ya estaba registrada, el último resultado pisa al anterior: un "Reservar ya"
+        # antes de la apertura deja una fallada, y si después el reloj la gana tiene que
+        # quedar reservada (caso Darío 27/9)
+        lista = [x for x in h.get("historial", [])
+                 if not (x.get("id") == reg["id"] and x.get("fecha") == reg["fecha"])]
         lista.append(reg)
         h["historial"] = lista[-500:]     # tope: últimas 500
         rb.escribir_json("historial.json", h)

@@ -877,6 +877,19 @@ class TestHistorialYBackup(BaseApp):
         regs = self.rb.leer_json("historial.json", {"historial": []})["historial"]
         self.assertEqual(sum(1 for r in regs if r["id"] == "h-test"), 1)
 
+    def test_historial_queda_el_ultimo_resultado(self):
+        # caso real (Darío 27/9): "Reservar ya" antes de la apertura -> fallada; se reprograma
+        # y el reloj la gana a la apertura -> el historial tiene que decir reservada
+        job = {"id": "h-ultimo", "fecha": self.dia, "hora_desde": "09:00", "club_id": 1102,
+               "cancha": "3", "reservador": "Dario Waingarten", "jugadores_full": []}
+        self.web._al_historial(job, "fallada", "", "RECHAZO -> todavía no abre", "The Boss")
+        self.web._al_historial(job, "reservada", "03-QUINTA", "", "The Boss")
+        regs = [r for r in self.rb.leer_json("historial.json", {"historial": []})["historial"]
+                if r["id"] == "h-ultimo"]
+        self.assertEqual(len(regs), 1)
+        self.assertEqual(regs[0]["estado"], "reservada")
+        self.assertEqual(regs[0]["cancha_real"], "03-QUINTA")
+
     def test_cada_usuario_ve_solo_su_historial(self):
         job = {"id": "h-diego", "fecha": self.dia, "hora_desde": "10:00", "club_id": 1102,
                "cancha": "4", "reservador": "Diego Fride", "jugadores_full": []}
