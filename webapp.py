@@ -1181,6 +1181,28 @@ def _revisar_acciones_prog(reservas=None):
 _manager_vivo = 0.0   # último latido del reloj interno (lo mira /salud)
 
 
+def _de_diego(job):
+    nombres = {"diego"} | {str(u.get("nombre", "")).strip().lower()
+                           for u in cargar_usuarios()
+                           if str(u.get("usuario", "")).strip().lower() == "diego"}
+    return str(job.get("creado_por", "")).strip().lower() in nombres
+
+
+def _plan_del_turno(job, jobs):
+    """Las otras reservas que disparan en el mismo turno (fecha + hora + club): con
+    ellas se reparte el primer tiro de cada una (rb.plan_simultaneas)."""
+    clave = (job["fecha"], job["hora_desde"], str(job.get("club_id")))
+    mismas = [j for j in jobs
+              if (j["fecha"], j["hora_desde"], str(j.get("club_id"))) == clave
+              and not j.get("problema")
+              and get_estado(j["id"]) not in ("reservada", "fallada", "vencida")]
+    try:
+        return rb.plan_simultaneas(mismas, primero=_de_diego)
+    except Exception as e:      # el reparto es una mejora: si falla, se dispara como siempre
+        registro("manager").info(f"plan del turno {clave}: {e}")
+        return {}
+
+
 def _manager():
     sincronizar_reloj()   # sincroniza el reloj una vez al arrancar (después se refresca solo)
     while True:
@@ -1209,6 +1231,7 @@ def _manager():
                               f"pudo disparar a la apertura. Fijate si la cancha sigue libre.")
                     continue
                 # dentro de la ventana: disparar (disparar() espera el segundo exacto)
+                job["_plan"] = _plan_del_turno(job, jobs).get(rid)
                 set_estado(rid, "en_curso")
                 threading.Thread(target=_disparar_job, args=(job,), daemon=True).start()
             # ⚠ el latido va ACÁ, apenas termina el disparo, y no al final: si alguna de

@@ -179,6 +179,7 @@ def armar_trabajo(reserva, jugadores, reservadores):
         "clave": res.get("clave"),
         "telefono": res.get("telefono", ""),
         "reservador": res.get("nombre", nombre_res),
+        "creado_por": reserva.get("creado_por", ""),
         "problema": problema,
         "player_ids": ids_otros,
         "jugadores_full": jug_full,
@@ -255,6 +256,65 @@ def canchas_para(club, hora):
     if str(hora or "") >= NOCHE_DESDE:
         return {n: c for n, c in base.items() if n not in CANCHAS_SOLO_DIA}
     return dict(base)
+
+
+def _zona_num(num):
+    n = int(num)
+    return "QUINTA" if n <= 4 else "KINERET" if n <= 8 else "CHACRA"
+
+
+CEDER_SEG = 0.25   # cuánto espera el primer tiro de una reserva que cede su cancha
+
+
+def plan_simultaneas(jobs, primero=lambda j: False):
+    """Reservas del MISMO turno (fecha + hora + club) que disparan en el mismo segundo.
+    Sin esto las dos arman la misma lista y le tiran juntas a la misma cancha: una la
+    gana y la otra pierde ~1,3 s por cada cancha que ya se llevó la de al lado.
+    Escalonado: cada una arranca por una cancha distinta, y las que ya son el primer
+    tiro de otra quedan al final de su lista (igual se prueban, como último recurso).
+    'primero(job)' marca las que van adelante en el reparto.
+    Devuelve {rid: {"primera": court_id, "al_final": [court_id...], "demora": seg}};
+    vacío si hay una sola reserva (ahí no se toca nada)."""
+    if len(jobs) < 2:
+        return {}
+    orden = sorted(jobs, key=lambda j: (0 if primero(j) else 1, str(j["id"])))
+    elegidas, de_los_primeros, plan = [], set(), {}
+    for j in orden:
+        club = canchas_para(j.get("club_id"), j.get("hora_desde"))
+        todas = [{"court_id": cid, "nombre": f"{int(n):02d}-{_zona_num(n)}"}
+                 for n, cid in sorted(club.items(), key=lambda kv: int(kv[0]))]
+        pref = str(j.get("cancha") or "").strip()
+        cands = [c["court_id"] for c in todas if OnDepor._cancha_coincide(c, pref)]
+        if not cands:
+            continue
+        if pref.isdigit():                       # puntual: su cancha es esa y nada más
+            primera = cands[0]
+        else:                                    # zona / cualquiera: la primera no tomada
+            primera = next((c for c in cands if c not in elegidas), cands[0])
+        ceder = primera in de_los_primeros and not primero(j)
+        plan[j["id"]] = {"primera": primera,
+                         "al_final": [c for c in elegidas if c != primera],
+                         "demora": CEDER_SEG if ceder else 0.0}
+        elegidas.append(primera)
+        if primero(j):
+            de_los_primeros.add(primera)
+    return plan
+
+
+def aplicar_plan(canchas, plan, canchas_club=None):
+    """Reordena la lista pre-cargada según plan_simultaneas(): la 'primera' adelante
+    (si el fuente no la listaba se agrega igual, como la cancha pedida) y las de
+    'al_final' atrás de todo, conservando el orden de las demás."""
+    if not plan or not plan.get("primera"):
+        return canchas
+    prim, atras = str(plan["primera"]), {str(c) for c in plan.get("al_final", [])}
+    cab = [c for c in canchas if str(c["court_id"]) == prim]
+    if not cab:
+        num = next((n for n, cid in (canchas_club or {}).items() if str(cid) == prim), prim)
+        cab = [{"court_id": plan["primera"], "nombre": str(num)}]
+    resto = [c for c in canchas if str(c["court_id"]) != prim]
+    return (cab[:1] + [c for c in resto if str(c["court_id"]) not in atras]
+            + [c for c in resto if str(c["court_id"]) in atras])
 
 
 def _candidatos_fuente(job):
@@ -339,6 +399,11 @@ def disparar(job, esperar=True):
                 listo = api.precargar_objetivo(job["jugadores_full"], cancha_preferida=job["cancha"],
                                                fuentes=fuentes, single_double=job["single_double"],
                                                canchas_club=canchas_para(job.get("club_id"), job.get("hora_desde")))
+            if listo and job.get("_plan"):
+                listo["canchas"] = aplicar_plan(listo["canchas"], job["_plan"],
+                                                canchas_para(job.get("club_id"), job.get("hora_desde")))
+                log(rid, f"hay otra reserva en este mismo turno: arranco por la cancha "
+                         f"{listo['canchas'][0].get('nombre')} para no chocar con ella.")
             if listo:
                 log(rid, f"PRE-CARGADO con turno fuente {listo['fuente']}: {len(listo['canchas'])} "
                          f"canchas activadas + jugadores registrados. Al tick solo queda confirmar.")
@@ -357,6 +422,8 @@ def disparar(job, esperar=True):
         # TICK RÁPIDO: si pre-cargamos, confirmar YA (solo confirm, ~0.5s). Si no entra, cae al
         # flujo normal completo de abajo (red de seguridad: nunca peor que hoy).
         if listo:
+            if (job.get("_plan") or {}).get("demora"):
+                time.sleep(job["_plan"]["demora"])
             try:
                 resp = api.confirmar_objetivo(listo, job["fecha"], job["hora_desde"], job["hora_hasta"],
                                               job["jugadores_full"], single_double=job["single_double"],

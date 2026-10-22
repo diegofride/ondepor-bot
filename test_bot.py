@@ -745,6 +745,49 @@ class TestConfirmarObjetivo(BaseApp):
         self.assertEqual(api.cont["confirm"], 0)
 
 
+class TestMismoTurno(BaseApp):
+    """Dos reservas en el mismo turno no le tiran juntas a la misma cancha."""
+    K5, K6, K7, K8 = 12596, 12597, 13510, 13511
+
+    def _job(self, rid, cancha, creado_por="Pablo"):
+        return {"id": rid, "fecha": "2026-11-01", "hora_desde": "22:00", "club_id": 1102,
+                "cancha": cancha, "creado_por": creado_por}
+
+    def test_una_sola_no_se_toca(self):
+        self.assertEqual(self.rb.plan_simultaneas([self._job("a", "KINERET")]), {})
+
+    def test_misma_zona_arrancan_por_canchas_distintas(self):
+        p = self.rb.plan_simultaneas([self._job("a", "KINERET"), self._job("b", "KINERET")])
+        self.assertEqual(p["a"]["primera"], self.K5)
+        self.assertEqual(p["b"]["primera"], self.K6)
+        self.assertEqual(p["b"]["al_final"], [self.K5])
+        self.assertEqual(p["b"]["demora"], 0.0)
+
+    def test_la_de_diego_elige_primero(self):
+        p = self.rb.plan_simultaneas([self._job("a", "KINERET"), self._job("z", "KINERET", "Diego")],
+                                     primero=self.web._de_diego)
+        self.assertEqual(p["z"]["primera"], self.K5)
+        self.assertEqual(p["a"]["primera"], self.K6)
+
+    def test_puntual_contra_diego_cede(self):
+        p = self.rb.plan_simultaneas([self._job("a", "5"), self._job("z", "KINERET", "Diego")],
+                                     primero=self.web._de_diego)
+        self.assertEqual(p["a"]["primera"], self.K5)
+        self.assertGreater(p["a"]["demora"], 0)
+        self.assertEqual(p["z"]["demora"], 0.0)
+
+    def test_aplicar_plan_reordena(self):
+        canchas = [{"court_id": self.K5, "nombre": "05-KINERET"},
+                   {"court_id": self.K7, "nombre": "07-KINERET"}]
+        r = self.rb.aplicar_plan(canchas, {"primera": self.K6, "al_final": [self.K5]},
+                                 self.rb.canchas_para(1102, "22:00"))
+        self.assertEqual([c["court_id"] for c in r], [self.K6, self.K7, self.K5])
+
+    def test_el_trabajo_trae_el_creador(self):
+        jobs = self.rb.buscar_trabajos("all")
+        self.assertEqual(jobs[0]["creado_por"], "Diego")
+
+
 # ----------------------------------------------------------------------
 #  6. Validaciones del formulario (backend, no solo el navegador)
 # ----------------------------------------------------------------------
